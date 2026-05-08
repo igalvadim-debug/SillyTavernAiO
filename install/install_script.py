@@ -146,7 +146,7 @@ def install_silero_tts():
     packages = [
         "torch",
         "torchaudio",
-        "silero-tts",
+        "flask",
     ]
     
     try:
@@ -210,6 +210,97 @@ if __name__ == "__main__":
         print(f"✓ Silero TTS integration script created: {integration_script}")
     except Exception as e:
         print(f"✗ Failed to create integration script: {e}")
+    
+    # Create the Silero TTS server script for start_all.bat
+    server_script = os.path.join(silero_dir, "silero_tts_server.py")
+    server_content = '''#!/usr/bin/env python3
+"""
+Silero TTS API Server
+Simple Flask-based API for Silero TTS
+"""
+
+import sys
+import argparse
+
+try:
+    from flask import Flask, request, jsonify, send_file
+    import torch
+    import io
+    import wave
+except ImportError as e:
+    print(f"Missing dependency: {e}")
+    print("Please install required packages:")
+    print("  pip install flask torch torchaudio")
+    sys.exit(1)
+
+app = Flask(__name__)
+model = None
+
+def load_model(language='ru'):
+    global model
+    try:
+        model, _ = torch.hub.load(
+            repo_or_dir='snakers4/silero-models',
+            model='silero_tts',
+            language=language,
+            speaker='v3_ru' if language == 'ru' else 'v3_en'
+        )
+        print(f"Silero TTS model loaded for language: {language}")
+        return True
+    except Exception as e:
+        print(f"Failed to load model: {e}")
+        return False
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "ok", "model_loaded": model is not None})
+
+@app.route('/tts', methods=['POST'])
+def text_to_speech():
+    if model is None:
+        return jsonify({"error": "Model not loaded"}), 500
+    
+    data = request.get_json()
+    text = data.get('text', '')
+    if not text:
+        return jsonify({"error": "No text provided"}), 400
+    
+    try:
+        audio = model.apply_tts(text=text)
+        
+        # Convert to WAV format
+        buffer = io.BytesIO()
+        with wave.open(buffer, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(48000)
+            wf.writeframes((audio.numpy()).tobytes())
+        buffer.seek(0)
+        
+        return send_file(buffer, mimetype='audio/wav', as_attachment=True, download_name='speech.wav')
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Silero TTS Server')
+    parser.add_argument('--port', type=int, default=5002, help='Port to run the server on')
+    parser.add_argument('--language', type=str, default='ru', help='Language code')
+    args = parser.parse_args()
+    
+    print(f"Starting Silero TTS server on port {args.port}...")
+    if load_model(args.language):
+        app.run(host='127.0.0.1', port=args.port, debug=False)
+    else:
+        print("Failed to load TTS model. Exiting.")
+        sys.exit(1)
+'''
+    
+    try:
+        with open(server_script, 'w', encoding='utf-8') as f:
+            f.write(server_content)
+        print(f"✓ Silero TTS server script created: {server_script}")
+    except Exception as e:
+        print(f"✗ Failed to create server script: {e}")
     
     return True
 
