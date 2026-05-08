@@ -161,14 +161,14 @@ exit /b 0
         exit /b 1
     )
     
-    REM Check if silero_tts_server.py exists, if not create it
-    if not exist "%SILERO_DIR%\silero_tts_server.py" (
-        echo Creating Silero TTS server script...
+    REM Check if silero_api_server.py exists (created by install_script.py)
+    if not exist "%SILERO_DIR%\silero_api_server.py" (
+        echo Silero API server script not found. Creating it...
         call :create_silero_server_script
     )
     
     echo Starting Silero TTS on port 5002...
-    start "Silero TTS" cmd /k "call "%VENV_DIR%\Scripts\activate.bat" ^&^& python "%SILERO_DIR%\silero_tts_server.py" --port 5002"
+    start "Silero TTS" cmd /k "call "%VENV_DIR%\Scripts\activate.bat" ^&^& python "%SILERO_DIR%\silero_api_server.py""
     
     REM Wait a moment for the server to start
     timeout /t 3 /nobreak >nul
@@ -176,88 +176,64 @@ exit /b 0
     exit /b 0
 
 :create_silero_server_script
-    SET SERVER_SCRIPT=%SILERO_DIR%\silero_tts_server.py
+    SET SERVER_SCRIPT=%SILERO_DIR%\silero_api_server.py
     
-    echo ^#!/usr/bin/env python3 > "%SERVER_SCRIPT%"
-    echo """ >> "%SERVER_SCRIPT%"
-    echo Silero TTS API Server >> "%SERVER_SCRIPT%"
-    echo Simple Flask-based API for Silero TTS >> "%SERVER_SCRIPT%"
-    echo """ >> "%SERVER_SCRIPT%"
-    echo. >> "%SERVER_SCRIPT%"
+    echo Creating fallback Silero server script...
+    echo import os > "%SERVER_SCRIPT%"
     echo import sys >> "%SERVER_SCRIPT%"
-    echo import argparse >> "%SERVER_SCRIPT%"
-    echo. >> "%SERVER_SCRIPT%"
-    echo try: >> "%SERVER_SCRIPT%"
-    echo     from flask import Flask, request, jsonify, send_file >> "%SERVER_SCRIPT%"
-    echo     import torch >> "%SERVER_SCRIPT%"
-    echo     import io >> "%SERVER_SCRIPT%"
-    echo     import wave >> "%SERVER_SCRIPT%"
-    echo except ImportError as e: >> "%SERVER_SCRIPT%"
-    echo     print(f"Missing dependency: {e}") >> "%SERVER_SCRIPT%"
-    echo     print("Please install required packages:") >> "%SERVER_SCRIPT%"
-    echo     print("  pip install flask torch torchaudio") >> "%SERVER_SCRIPT%"
-    echo     sys.exit(1) >> "%SERVER_SCRIPT%"
+    echo import torch >> "%SERVER_SCRIPT%"
+    echo from flask import Flask, request, jsonify, send_file >> "%SERVER_SCRIPT%"
+    echo import wave >> "%SERVER_SCRIPT%"
+    echo import numpy as np >> "%SERVER_SCRIPT%"
+    echo import io >> "%SERVER_SCRIPT%"
     echo. >> "%SERVER_SCRIPT%"
     echo app = Flask(__name__) >> "%SERVER_SCRIPT%"
+    echo. >> "%SERVER_SCRIPT%"
+    echo # Try to load the local model first, fallback to hub >> "%SERVER_SCRIPT%"
+    echo MODEL_PATH = r"D:\\SillyTavernAiO\\SileroTTS\\models\\v5_5_ru.pt" >> "%SERVER_SCRIPT%"
+    echo DEVICE = torch.device('cpu') >> "%SERVER_SCRIPT%"
     echo model = None >> "%SERVER_SCRIPT%"
     echo. >> "%SERVER_SCRIPT%"
-    echo def load_model^(language='ru'^): >> "%SERVER_SCRIPT%"
-    echo     global model >> "%SERVER_SCRIPT%"
-    echo     try: >> "%SERVER_SCRIPT%"
-    echo         model, _ = torch.hub.load( >> "%SERVER_SCRIPT%"
-    echo             repo_or_dir='snakers4/silero-models', >> "%SERVER_SCRIPT%"
-    echo             model='silero_tts', >> "%SERVER_SCRIPT%"
-    echo             language=language, >> "%SERVER_SCRIPT%"
-    echo             speaker='v3_ru' if language == 'ru' else 'v3_en' >> "%SERVER_SCRIPT%"
-    echo         ^) >> "%SERVER_SCRIPT%"
-    echo         print(f"Silero TTS model loaded for language: {language}") >> "%SERVER_SCRIPT%"
-    echo         return True >> "%SERVER_SCRIPT%"
-    echo     except Exception as e: >> "%SERVER_SCRIPT%"
-    echo         print(f"Failed to load model: {e}") >> "%SERVER_SCRIPT%"
-    echo         return False >> "%SERVER_SCRIPT%"
+    echo try: >> "%SERVER_SCRIPT%"
+    echo     if os.path.exists(MODEL_PATH): >> "%SERVER_SCRIPT%"
+    echo         model = torch.jit.load(MODEL_PATH, map_location=DEVICE) >> "%SERVER_SCRIPT%"
+    echo         print("Loaded local Silero model") >> "%SERVER_SCRIPT%"
+    echo     else: >> "%SERVER_SCRIPT%"
+    echo         model, _ = torch.hub.load(repo_or_dir='snakers4/silero-models', model='silero_ru', trust_repo=True) >> "%SERVER_SCRIPT%"
+    echo         print("Loaded Silero model from hub") >> "%SERVER_SCRIPT%"
+    echo     model.eval() >> "%SERVER_SCRIPT%"
+    echo except Exception as e: >> "%SERVER_SCRIPT%"
+    echo     print(f"Error loading model: {e}") >> "%SERVER_SCRIPT%"
+    echo     sys.exit(1) >> "%SERVER_SCRIPT%"
     echo. >> "%SERVER_SCRIPT%"
-    echo @app.route^('/health'^): >> "%SERVER_SCRIPT%"
-    echo def health^(: >> "%SERVER_SCRIPT%"
-    echo     return jsonify^{^{"status": "ok", "model_loaded": model is not None}^} >> "%SERVER_SCRIPT%"
-    echo. >> "%SERVER_SCRIPT%"
-    echo @app.route^('/tts', methods=['POST'^]): >> "%SERVER_SCRIPT%"
-    echo def text_to_speech^(: >> "%SERVER_SCRIPT%"
-    echo     if model is None: >> "%SERVER_SCRIPT%"
-    echo         return jsonify^{^{"error": "Model not loaded"}^}, 500 >> "%SERVER_SCRIPT%"
-    echo. >> "%SERVER_SCRIPT%"
-    echo     data = request.get_json^(^) >> "%SERVER_SCRIPT%"
-    echo     text = data.get^('text', ''^) >> "%SERVER_SCRIPT%"
+    echo @app.route('/tts', methods=['GET']) >> "%SERVER_SCRIPT%"
+    echo def tts(): >> "%SERVER_SCRIPT%"
+    echo     text = request.args.get('text', '') >> "%SERVER_SCRIPT%"
+    echo     speaker = request.args.get('speaker', 'aidar') >> "%SERVER_SCRIPT%"
+    echo     sample_rate = int(request.args.get('sample_rate', '24000')) >> "%SERVER_SCRIPT%"
     echo     if not text: >> "%SERVER_SCRIPT%"
-    echo         return jsonify^{^{"error": "No text provided"}^}, 400 >> "%SERVER_SCRIPT%"
+    echo         return jsonify({"error": "No text provided"}), 400 >> "%SERVER_SCRIPT%"
+    echo     with torch.no_grad(): >> "%SERVER_SCRIPT%"
+    echo         try: >> "%SERVER_SCRIPT%"
+    echo             audio = model(text, speaker=speaker, sample_rate=sample_rate) >> "%SERVER_SCRIPT%"
+    echo         except: >> "%SERVER_SCRIPT%"
+    echo             audio = model(text, speaker=speaker) >> "%SERVER_SCRIPT%"
+    echo     audio = audio.cpu().numpy().flatten() >> "%SERVER_SCRIPT%"
+    echo     buffer = io.BytesIO() >> "%SERVER_SCRIPT%"
+    echo     with wave.open(buffer, 'wb') as wf: >> "%SERVER_SCRIPT%"
+    echo         wf.setnchannels(1) >> "%SERVER_SCRIPT%"
+    echo         wf.setsampwidth(2) >> "%SERVER_SCRIPT%"
+    echo         wf.setframerate(sample_rate) >> "%SERVER_SCRIPT%"
+    echo         wf.writeframes((audio * 32767).astype(np.int16).tobytes()) >> "%SERVER_SCRIPT%"
+    echo     buffer.seek(0) >> "%SERVER_SCRIPT%"
+    echo     return send_file(buffer, mimetype="audio/wav") >> "%SERVER_SCRIPT%"
     echo. >> "%SERVER_SCRIPT%"
-    echo     try: >> "%SERVER_SCRIPT%"
-    echo         audio = model.apply_tts^text=text^) >> "%SERVER_SCRIPT%"
-    echo         >> "%SERVER_SCRIPT%"
-    echo         REM Convert to WAV format >> "%SERVER_SCRIPT%"
-    echo         buffer = io.BytesIO^^) >> "%SERVER_SCRIPT%"
-    echo         with wave.open^buffer, 'wb'^) as wf: >> "%SERVER_SCRIPT%"
-    echo             wf.setnchannels^1^) >> "%SERVER_SCRIPT%"
-    echo             wf.setsampwidth^2^) >> "%SERVER_SCRIPT%"
-    echo             wf.setframerate^48000^) >> "%SERVER_SCRIPT%"
-    echo             wf.writeframes^^(audio.numpy^.^).tobytes^)^) >> "%SERVER_SCRIPT%"
-    echo         buffer.seek^0^) >> "%SERVER_SCRIPT%"
-    echo         >> "%SERVER_SCRIPT%"
-    echo         return send_file^buffer, mimetype='audio/wav', as_attachment=True, download_name='speech.wav'^) >> "%SERVER_SCRIPT%"
-    echo     except Exception as e: >> "%SERVER_SCRIPT%"
-    echo         return jsonify^{^{"error": str^e^)}^}, 500 >> "%SERVER_SCRIPT%"
+    echo @app.route('/') >> "%SERVER_SCRIPT%"
+    echo def index(): >> "%SERVER_SCRIPT%"
+    echo     return "Silero TTS API (Russian v5.5) on Port 5002" >> "%SERVER_SCRIPT%"
     echo. >> "%SERVER_SCRIPT%"
     echo if __name__ == '__main__': >> "%SERVER_SCRIPT%"
-    echo     parser = argparse.ArgumentParser^description='Silero TTS Server'^) >> "%SERVER_SCRIPT%"
-    echo     parser.add_argument^('--port', type=int, default=5002, help='Port to run the server on'^) >> "%SERVER_SCRIPT%"
-    echo     parser.add_argument^('--language', type=str, default='ru', help='Language code'^) >> "%SERVER_SCRIPT%"
-    echo     args = parser.parse_args^)^) >> "%SERVER_SCRIPT%"
-    echo. >> "%SERVER_SCRIPT%"
-    echo     print^f"Starting Silero TTS server on port {args.port}..."^) >> "%SERVER_SCRIPT%"
-    echo     if load_model^args.language^): >> "%SERVER_SCRIPT%"
-    echo         app.run^host='127.0.0.1', port=args.port, debug=False^) >> "%SERVER_SCRIPT%"
-    echo     else: >> "%SERVER_SCRIPT%"
-    echo         print^"Failed to load TTS model. Exiting."^) >> "%SERVER_SCRIPT%"
-    echo         sys.exit^1^) >> "%SERVER_SCRIPT%"
+    echo     app.run(host='127.0.0.1', port=5002) >> "%SERVER_SCRIPT%"
     
     exit /b 0
 
@@ -279,14 +255,18 @@ exit /b 0
     exit /b 0
 
 :start_sillytavern
-    if not exist "%SILLYTAVERN_DIR%\server.js" (
-        echo SillyTavern server.js not found at %SILLYTAVERN_DIR%\server.js
+    REM Use the SillyTavern Start.bat if it exists, otherwise fall back to node server.js
+    if exist "%SILLYTAVERN_DIR%\Start.bat" (
+        echo Starting SillyTavern using Start.bat...
+        start "SillyTavern" cmd /k "cd /d "%SILLYTAVERN_DIR%" ^&^& call Start.bat"
+    ) else if exist "%SILLYTAVERN_DIR%\server.js" (
+        echo Starting SillyTavern on port 8000...
+        start "SillyTavern" cmd /k "cd /d "%SILLYTAVERN_DIR%" ^&^& node server.js"
+    ) else (
+        echo SillyTavern not found at %SILLYTAVERN_DIR%
         echo Please run install.bat first.
         exit /b 1
     )
-    
-    echo Starting SillyTavern on port 8000...
-    start "SillyTavern" cmd /k "cd /d "%SILLYTAVERN_DIR%" ^&^& node server.js"
     
     echo.
     echo ============================================================

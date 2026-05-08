@@ -1,1 +1,1 @@
-*.bat
+Nothing should be ignored based on the provided file changes. The modified files (`install/install_script.py` and `install/start_all.bat`) are source code and batch script files that should be tracked in version control.
