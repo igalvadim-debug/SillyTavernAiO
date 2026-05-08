@@ -1,0 +1,14 @@
+[1] Aura_v2_7B-Q5_K_M-imat.gguf
+[2] Dolphin3.0-Llama3.1-8B-abliterated.i1-Q4_K_M.gguf
+[3] gemma-4-E4B-it-heretic-Q4_K_M.gguf
+[4] gemma-4-E4B-it-heretic-Q6_K.gguf
+[5] gemma-4-E4B-it-heretic-Q8_0.gguf
+[6] L3-8B-Stheno-v3.2-Q4_K_M.gguf
+[7] Mistral-7B-Instruct-v0.3-abliterated.Q3_K_S.gguf
+[8] Mistral-7B-Instruct-v0.3-abliterated.Q5_K_S.gguf
+[9] Mistral-Nemo-12B-Instruct-2407-Q4_K_S.gguf
+[10] Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf
+[11] Qwen3.5-35B-A3B-MXFP4_MOE_BF16.gguf
+[12] Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q6_K.gguf
+[13] saiga_llama3_8b.gguf
+[14] Yi-Coder-9B-Chat-Q4_K_M.gguf
