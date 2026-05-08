@@ -12,7 +12,6 @@ import sys
 import subprocess
 import urllib.request
 import json
-import shutil
 
 # Configuration
 BASE_DIR = r"D:\SillyTavernAiO"
@@ -57,8 +56,6 @@ def download_file(url, destination):
             print("\nDownload complete.")
     except Exception as e:
         print(f"Error downloading file: {e}")
-        if "silero" in url:
-            print("Note: Direct download failed. The API server might attempt to download it later.")
         raise
 
 def install_sillytavern():
@@ -125,24 +122,44 @@ def install_koboldcpp():
     return True
 
 def install_silero_tts():
-    print("\n--- Installing Silero TTS ---")
+    print("\n--- Installing Silero TTS Dependencies & Model ---")
     ensure_dir(SILERO_DIR)
     ensure_dir(SILERO_MODELS_DIR)
     
-    # 1. Download the specific Russian model v5_5_ru.pt
+    # 1. CRITICAL: Install Python dependencies into the active virtual environment
+    packages = ["torch", "torchaudio", "flask", "numpy", "scipy", "soundfile"]
+    
+    print(f"Installing required Python packages: {', '.join(packages)}")
+    print(f"Using Python interpreter: {sys.executable}")
+    
+    cmd = [sys.executable, "-m", "pip", "install", "--upgrade"] + packages
+    result = subprocess.run(cmd)
+    
+    if result.returncode != 0:
+        print("ERROR: Failed to install Silero dependencies!")
+        print("Please check your internet connection and pip configuration.")
+        return False
+    
+    print("Silero dependencies installed successfully.")
+
+    # 2. Download the specific Russian model v5_5_ru.pt
     if not os.path.exists(SILERO_MODEL_FILE):
-        print(f"Downloading Silero Russian model (v5_5_ru.pt) to {SILERO_MODELS_DIR}...")
+        print(f"\nDownloading Silero Russian model (v5_5_ru.pt) to {SILERO_MODELS_DIR}...")
         try:
             download_file(SILERO_MODEL_URL, SILERO_MODEL_FILE)
         except Exception as e:
             print(f"Warning: Could not auto-download model. Error: {e}")
-            print("You may need to download it manually from https://models.silero.ai/models/tts/ru/v5_5_ru.pt")
+            print("You may need to download it manually.")
+    else:
+        print(f"Model already exists at {SILERO_MODEL_FILE}.")
     
-    # 2. Create the Silero API Server Script
+    # 3. Create the Silero API Server Script
     server_script_path = os.path.join(SILERO_DIR, "silero_api_server.py")
-    print(f"Creating Silero API Server script at {server_script_path}...")
+    print(f"\nCreating Silero API Server script at {server_script_path}...")
     
-    server_code = '''import os
+    escaped_path = SILERO_MODEL_FILE.replace('\\', '\\\\')
+    
+    server_code = f'''import os
 import sys
 import torch
 from flask import Flask, request, jsonify, send_file
@@ -152,26 +169,40 @@ import io
 
 app = Flask(__name__)
 
-# Path to the specific model
-MODEL_PATH = r"{model_path}"
+MODEL_PATH = r"{escaped_path}"
 DEVICE = torch.device('cpu')
 
 print(f"Loading Silero TTS model from: {{MODEL_PATH}}")
 
-try:
-    # Robust method for Silero v5 - load the .pt file directly as TorchScript
-    model = torch.jit.load(MODEL_PATH, map_location=DEVICE)
-    model.eval()
-    print("Model loaded successfully.")
-except Exception as e:
-    print(f"Error loading model: {{e}}")
-    print("Attempting to load via torch.hub as fallback...")
+model = None
+
+def load_model():
+    global model
     try:
-        model, example_text = torch.hub.load(repo_or_dir='snakers4/silero-models', model='silero_ru', trust_repo=True)
+        print("Loading base model architecture from snakers4/silero-models (v5_ru)...")
+        model, example_text = torch.hub.load(repo_or_dir='snakers4/silero-models', model='v5_ru', source='github', trust_repo=True)
+        
+        if os.path.exists(MODEL_PATH):
+            print(f"Loading specific weights from local file: {{MODEL_PATH}}")
+            checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
+            if isinstance(checkpoint, dict):
+                model.load_state_dict(checkpoint)
+                print("Loaded state_dict from local file.")
+            else:
+                print("Local file format not directly compatible, using hub model.")
+        
+        model.to(DEVICE)
         model.eval()
-    except Exception as e2:
-        print(f"Critical error loading model: {{e2}}")
-        sys.exit(1)
+        print("Silero Model loaded successfully on CPU.")
+        return True
+        
+    except Exception as e:
+        print(f"Error loading model: {{e}}")
+        return False
+
+if not load_model():
+    print("Failed to load model. Exiting.")
+    sys.exit(1)
 
 @app.route('/tts', methods=['GET'])
 def tts():
@@ -187,21 +218,21 @@ def tts():
     
     with torch.no_grad():
         try:
-            audio = model(text, speaker=speaker, sample_rate=int(sample_rate))
-        except TypeError:
-            audio = model(text, speaker=speaker)
+            audio = model.apply_tts(text=text, speaker=speaker, sample_rate=sample_rate)
+        except Exception as e:
+            return jsonify({{"error": str(e)}}), 500
             
-    audio = audio.cpu().numpy().flatten()
+    audio_np = audio.cpu().numpy().flatten()
     
     buffer = io.BytesIO()
     with wave.open(buffer, 'wb') as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
-        wf.writeframes((audio * 32767).astype(np.int16).tobytes())
+        wf.writeframes((audio_np * 32767).astype(np.int16).tobytes())
     
     buffer.seek(0)
-    return send_file(buffer, mimetype="audio/wav", as_attachment=False, download_name="audio.wav")
+    return send_file(buffer, mimetype="audio/wav", download_name="audio.wav")
 
 @app.route('/')
 def index():
@@ -212,10 +243,8 @@ if __name__ == '__main__':
     app.run(host='127.0.0.1', port=5002, debug=False)
 '''
     
-    final_code = server_code.format(model_path=SILERO_MODEL_FILE.replace('\\', '\\\\'))
-    
     with open(server_script_path, 'w', encoding='utf-8') as f:
-        f.write(final_code)
+        f.write(server_code)
         
     print("Silero TTS installation complete.")
     return True
