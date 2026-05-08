@@ -39,7 +39,7 @@ if errorlevel 1 (
 
 echo.
 echo Running Python installation script...
-python install_script.py
+%PYTHON_EXE% install_script.py
 if errorlevel 1 (
     echo WARNING: Installation script completed with errors.
     echo Check the output above for details.
