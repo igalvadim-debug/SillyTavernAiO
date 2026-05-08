@@ -1,23 +1,5 @@
 ```
-# Team data files (if they contain sensitive information)
-CodingTeams/*.json
-
-# Logs and temp files
-*.log
-*.tmp
-
-# Environment files
-.env
-.env.local
-*.env.*
-
-# Editor/IDE files
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Dependency directories
+# Dependencies
 node_modules/
 venv/
 .venv/
@@ -29,7 +11,22 @@ build/
 target/
 .gradle/
 
-# OS files
+# Environment
+.env
+.env.local
+.env.*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs and temp files
+*.log
+*.tmp
+
+# System files
 .DS_Store
 Thumbs.db
 
