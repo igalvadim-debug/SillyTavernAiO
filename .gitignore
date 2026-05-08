@@ -1,1 +1,1 @@
-Nothing should be ignored based on the provided file changes. The modified files (`install/install_script.py` and `install/start_all.bat`) are source code and batch script files that should be tracked in version control.
+Nothing needs to be added to .gitignore since only a markdown file (prompt.md) was added, which is a source/config file and should not be ignored.
