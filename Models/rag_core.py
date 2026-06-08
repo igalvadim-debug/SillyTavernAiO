@@ -390,7 +390,7 @@ def generate_rag_answer(question, context, style="реализм", language="р�
             "детектив":         "An LTX 2.3 Director prompt. Crime detective noir style: dark rainy city streets, Venetian blind shadows, trench coat atmosphere, jazz soundtrack, slow-burn pacing, voice-over inner monologue, high-contrast lighting, moral ambiguity.",
             "music: rock concert":    "An LTX 2.3 Director prompt. Rock concert music video style: live stage performance, electric guitars, drums, crowd energy, dynamic moving camera, stage lights and smoke, raw authentic concert atmosphere, powerful rock soundscape.",
             "music: pop concert":     "An LTX 2.3 Director prompt. Pop concert music video style: arena stage, colorful LED visuals, choreographed dancing, glossy production, upbeat pop soundscape, crowd singalongs, polished camera work, confetti and pyrotechnics.",
-            "music: thai clip":       "An LTX 2.3 Director prompt. Thai music video style: vibrant Southeast Asian aesthetic, warm golden hour lighting, tropical settings, Thai pop/luk thung visual language, emotional storytelling, colorful traditional-meets-modern imagery.",
+            "Talkshow":           "An LTX 2.3 Director prompt. TV talk show style: large live studio audience, cheering and applause, energetic charismatic host working the crowd, bright stage lighting, multiple camera angles cutting between host and guests, audience reaction shots, lively banter atmosphere.",
             "music: русский шансон":  "An LTX 2.3 Director prompt. Russian chanson music video style: gritty post-Soviet atmosphere, cigarette smoke, acoustic guitar, soulful melancholic mood, dimly lit interiors, road trips, prison yard aesthetics, heartfelt raw performance.",
             "music: latino pop":      "An LTX 2.3 Director prompt. Latino pop music video style: sunny vibrant colors, beach and urban settings, salsa/reggaeton dance energy, warm golden light, festive atmosphere, sensual camera moves, Spanish-language lip-sync, tropical glow.",
             "music: latin reggaeton": "An LTX 2.3 Director prompt. Latin reggaeton music video style: urban street vibe, neon lights, heavy bass drops, perreo dance culture, low-angle shots, slow-motion booty drops, tropical nightlife, dembow rhythm energy, sensual camera.",
@@ -416,28 +416,49 @@ def generate_rag_answer(question, context, style="реализм", language="р�
             "французский":  "French",
         }
         dialogue_lang = dialogue_lang_map.get(language, "Russian")
+        dialogue_script_map = {
+            "Russian":  "Cyrillic",
+            "German":   "Latin",
+            "English":  "Latin",
+            "Spanish":  "Latin",
+            "Polish":   "Latin",
+            "Dutch":    "Latin",
+            "French":   "Latin",
+        }
+        dialogue_script = dialogue_script_map.get(dialogue_lang, "Latin")
         lang_instr = (
             f"All technical directives and scene descriptions MUST be in English. "
             f"CRITICAL DIALOGUE LANGUAGE RULE: Generate ALL spoken dialogue text inside the lip-sync single quotes "
-            f"EXCLUSIVELY in {dialogue_lang} — translate if needed, never output dialogue in any other language. "
-            f"The source context may be in a different language — IGNORE that, always write dialogue in {dialogue_lang}."
+            f"EXCLUSIVELY in {dialogue_lang} using ONLY {dialogue_script} script. "
+            f"NO Chinese, Japanese, Korean, Arabic, or any other script — ONLY {dialogue_script}. "
+            f"Translate if needed, never mix languages. "
+            f"The source context may be in a different language — IGNORE that, always write dialogue in pure {dialogue_lang}."
         )
 
         # Director Mode — переопределяем task на структурированный формат
         if director_mode == "Director Mode":
+            # Английский маппинг стилей для Director Mode
+            style_map_en = {
+                "реализм":          "gritty realism, raw and unpolished, natural light, documentary feel",
+                "мрачный":          "dark and oppressive, heavy shadows, bleak atmosphere, cold tones",
+                "юмор":             "bright and playful, ironic detachment, absurdist framing, warm tones",
+                "поток сознания":   "fragmented and disorienting, abstract visuals, shifting focus, dreamlike",
+            }
+            style_en = style_map_en.get(style, style_map_en["реализм"])
+
             task = (
                 f"You are an LTX Director AI. Output a structured director's breakdown in this EXACT format:\n\n"
                 f"GLOBAL PROMPT:\n"
-                f"Hyper-realistic 4K cinematic. Skin textures show pores, flush responses, natural glistening sheen. "
-                f"Continuous camera movement with audible environmental sounds. "
-                f"Lighting and atmosphere: {style_instr}\n\n"
+                f"Generate a global prompt that captures the visual atmosphere, lighting, and audio tone "
+                f"based on the narrator style: {format_instr}\n"
+                f"Style direction: {style_en}\n"
+                f"Make the global prompt specific to the genre — do NOT use generic 'hyper-realistic 4K' unless it fits the genre.\n\n"
                 f"Then output exactly 5 numbered sequences (SEQUENCE 1 through SEQUENCE 5), each containing:\n"
                 f"- Director Node: (camera shot, framing, movement)\n"
                 f"- Cinematographer Directive: (lighting, focus, depth of field, color)\n"
                 f"- Audio Trigger: (ambient sound, breathing, music, environmental audio)\n"
                 f"- Dialogue Trigger: (ONLY if the scene has spoken words — whisper, internal, or direct speech using lip-sync syntax)\n\n"
-                f"Follow the baseline narrator style: {format_instr}\n"
-                f"IMPORTANT: No markdown headers like 'SCENE 1'. Use 'SEQUENCE 1:' format. "
+                f"IMPORTANT: No markdown headers. Use 'SEQUENCE 1:' format. "
                 f"The 5 sequences must form a coherent narrative arc from the context."
             )
     else:
