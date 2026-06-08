@@ -1,0 +1,542 @@
+"""
+rag_core.py — ядро RAG: эмбеддинги, поиск по Chroma, генерация через llama.cpp, KoboldCpp или облако.
+Все пути относительные от папки скрипта.
+"""
+
+import os
+import re
+import subprocess
+import time
+import requests
+from pathlib import Path
+from sentence_transformers import SentenceTransformer
+import chromadb
+
+# ──────────────────────────────────────────────
+# ПУТИ (все относительные от папки этого файла)
+# ──────────────────────────────────────────────
+BASE_DIR    = Path(__file__).parent
+MODEL_DIR   = BASE_DIR / "model"
+CHROMA_DIR  = BASE_DIR / "chroma_zaebalo"
+DOCS_DIR    = BASE_DIR / "docs"
+ENV_FILE    = BASE_DIR / ".env"
+
+# ──────────────────────────────────────────────
+# ЧТЕНИЕ .env (портативно— без системных переменных)
+# ──────────────────────────────────────────────
+
+def load_env() -> dict:
+    """Читает .env из папки проекта, возвращает словарь KEY=VALUE."""
+    env = {}
+    if not ENV_FILE.exists():
+        return env
+    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        env[k.strip()] = v.strip()
+    return env
+
+
+def save_env(updates: dict):
+    """Сохраняет обновлённые значения обратно в .env."""
+    current = load_env()
+    current.update({k: v for k, v in updates.items() if v})
+    lines = []
+    # Сохраняем порядок строк из оригинального файла
+    if ENV_FILE.exists():
+        for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                lines.append(line)
+                continue
+            k, _, _ = stripped.partition("=")
+            k = k.strip()
+            if k in current:
+                lines.append(f"{k}={current.pop(k)}")
+            else:
+                lines.append(line)
+    # Добавляем новые ключи если есть
+    for k, v in current.items():
+        lines.append(f"{k}={v}")
+    ENV_FILE.write_text("\n".join(lines), encoding="utf-8")
+
+
+# ──────────────────────────────────────────────
+# ОБЛАЧНЫЕ ПРОВАЙДЕРЫ
+# ──────────────────────────────────────────────
+
+# Конфигурация провайдеров: url, модель по умолчанию, ключ из .env
+CLOUD_PROVIDERS = {
+    "OpenAI":      {"url": "https://api.openai.com/v1/chat/completions",             "model": "gpt-4o-mini",                  "key_var": "OPENAI_API_KEY"},
+    "Google":      {"url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", "model": "gemini-2.0-flash", "key_var": "GOOGLE_API_KEY"},
+    "Groq":        {"url": "https://api.groq.com/openai/v1/chat/completions",        "model": "llama-3.3-70b-versatile",       "key_var": "GROQ_API_KEY"},
+    "NVIDIA":      {"url": "https://integrate.api.nvidia.com/v1/chat/completions",   "model": "meta/llama-3.3-70b-instruct",   "key_var": "NVIDIA_API_KEY"},
+    "NVIDIA_NIM":  {"url": "https://integrate.api.nvidia.com/v1/chat/completions",   "model": "meta/llama-3.3-70b-instruct",   "key_var": "NVIDIA_NIM_API_KEY"},
+    "DeepSeek":    {"url": "https://api.deepseek.com/chat/completions",               "model": "deepseek-chat",                "key_var": "DEEPSEEK_API_KEY"},
+    "OpenRouter":  {"url": "https://openrouter.ai/api/v1/chat/completions",           "model": "openai/gpt-4o-mini",           "key_var": "OPENROUTER_API_KEY"},
+}
+
+# llama-server бинарник — ищем в известных местах (порядок важен)
+LLAMA_CANDIDATES = [
+    BASE_DIR / "llama.cpp-master" / "llama-b9553-bin-win-cuda-13.3-x64" / "llama-server.exe",
+    BASE_DIR / "llama.cpp-master" / "build" / "bin" / "llama-server.exe",
+    BASE_DIR / "llama.cpp-master" / "build" / "bin" / "Release" / "llama-server.exe",
+    BASE_DIR / "llama.cpp-master" / "llama-server.exe",
+    BASE_DIR / "llama" / "llama-server.exe",
+]
+
+KOBOLD_URL  = "http://127.0.0.1:5001/v1/chat/completions"
+LLAMA_URL   = "http://127.0.0.1:8080/v1/chat/completions"
+
+TOP_K       = 7
+COLLECTION  = "zaebalo"
+
+# ──────────────────────────────────────────────
+# ГЛОБАЛЬНЫЕ ОБЪЕКТЫ (ленивая загрузка)
+# ──────────────────────────────────────────────
+_model      = None
+_client     = None
+_collection = None
+_llama_proc = None   # subprocess llama-server если мы его запустили
+
+
+def get_model():
+    """Загружает SentenceTransformer один раз и кэширует."""
+    global _model
+    if _model is None:
+        print(f"[RAG] Загружаю модель из {MODEL_DIR} ...")
+        _model = SentenceTransformer(str(MODEL_DIR))
+        print("[RAG] Модель загружена.")
+    return _model
+
+
+def get_collection():
+    """Открывает Chroma-коллекцию один раз и кэширует."""
+    global _client, _collection
+    if _collection is None:
+        _client     = chromadb.PersistentClient(path=str(CHROMA_DIR))
+        _collection = _client.get_or_create_collection(COLLECTION)
+    return _collection
+
+
+# ──────────────────────────────────────────────
+# ОПРЕДЕЛЕНИЕ БЭКЕНДА
+# ──────────────────────────────────────────────
+
+def find_llama_server() -> Path | None:
+    """Ищет llama-server.exe среди известных путей."""
+    for p in LLAMA_CANDIDATES:
+        if p.exists():
+            return p
+    return None
+
+
+def kobold_alive() -> bool:
+    """Проверяет доступность KoboldCpp на порту 5001."""
+    try:
+        r = requests.get("http://127.0.0.1:5001/api/v1/info", timeout=2)
+        return r.status_code < 500
+    except Exception:
+        return False
+
+
+def llama_alive() -> bool:
+    """Проверяет доступность llama-server на порту 8080."""
+    try:
+        r = requests.get("http://127.0.0.1:8080/health", timeout=2)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def start_llama_server(gguf_path: str, log_callback=None) -> bool:
+    """
+    Запускает llama-server.exe с нужными параметрами.
+    gguf_path — полный путь к GGUF-файлу.
+    Возвращает True если сервер поднялся.
+    """
+    global _llama_proc
+
+    exe = find_llama_server()
+    if exe is None:
+        msg = "[RAG] llama-server.exe не найден. Скомпилируй llama.cpp или положи бинарник в llama.cpp-master/build/bin/"
+        print(msg)
+        if log_callback:
+            log_callback(msg)
+        return False
+
+    if llama_alive():
+        msg = "[RAG] llama-server уже запущен на порту 8080."
+        print(msg)
+        if log_callback:
+            log_callback(msg)
+        return True
+
+    cmd = [
+        str(exe),
+        "-m", gguf_path,
+        "-ngl", "99",           # все слои в GPU
+        "-c", "8192",           # контекст
+        "--flash-attn",         # Flash Attention — экономия VRAM
+        "-b", "512",            # batch size
+        "--ubatch-size", "512", # micro-batch
+        "--mlock",              # не свопить модель
+        "-t", "8",              # потоки CPU
+        "--port", "8080",
+        "--host", "127.0.0.1",
+    ]
+
+    msg = f"[RAG] Запускаю llama-server: {' '.join(cmd)}"
+    print(msg)
+    if log_callback:
+        log_callback(msg)
+
+    _llama_proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+
+    # Ждём до 30 секунд пока сервер поднимется
+    for i in range(30):
+        time.sleep(1)
+        if llama_alive():
+            msg = f"[RAG] llama-server готов (через {i+1} сек)."
+            print(msg)
+            if log_callback:
+                log_callback(msg)
+            return True
+
+    msg = "[RAG] llama-server не ответил за 30 секунд."
+    print(msg)
+    if log_callback:
+        log_callback(msg)
+    return False
+
+
+def stop_llama_server():
+    """Останавливает llama-server если мы его запустили."""
+    global _llama_proc
+    if _llama_proc and _llama_proc.poll() is None:
+        _llama_proc.terminate()
+        _llama_proc = None
+        print("[RAG] llama-server остановлен.")
+
+
+def get_backend() -> str:
+    """
+    Определяет активный бэкенд.
+    Возвращает: 'kobold', 'llama', или 'none'.
+    """
+    if kobold_alive():
+        return "kobold"
+    if llama_alive():
+        return "llama"
+    return "none"
+
+
+def get_api_url() -> str:
+    backend = get_backend()
+    if backend == "kobold":
+        return KOBOLD_URL
+    return LLAMA_URL
+
+
+# ──────────────────────────────────────────────
+# RAG: ПОИСК
+# ──────────────────────────────────────────────
+
+def search_chunks(question: str, top_k: int = TOP_K) -> list[str]:
+    """Ищет top_k релевантных чанков по вопросу."""
+    model      = get_model()
+    collection = get_collection()
+
+    q_emb = model.encode(question).tolist()
+    results = collection.query(
+        query_embeddings=[q_emb],
+        n_results=min(top_k, collection.count()),
+    )
+    return results["documents"][0] if results["documents"] else []
+
+
+def build_context(chunks: list[str]) -> str:
+    """Собирает контекст из чанков."""
+    return "\n\n---\n\n".join(chunks)
+
+
+# ──────────────────────────────────────────────
+# ГЕНЕРАЦИЯ
+# ──────────────────────────────────────────────
+
+def extract_word_limit(text: str) -> int | None:
+    """Извлекает лимит слов из запроса ('на 150 слов' → 150)."""
+    m = re.search(r"(\d+)\s*слов", text)
+    return int(m.group(1)) if m else None
+
+
+def _try_cloud_provider(prov_name: str, messages: list[dict], max_tokens: int, temperature: float):
+    """Пробует один облачный API. Возвращает (ответ, None) или (None, ошибка)."""
+    cfg = CLOUD_PROVIDERS[prov_name]
+    env = load_env()
+    api_key = env.get(cfg["key_var"], "")
+    if not api_key:
+        return None, f"[{prov_name}] API ключ не найден в .env"
+    headers = {
+        "Content-Type":  "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    payload = {
+        "model":       cfg["model"],
+        "messages":    messages,
+        "temperature": temperature,
+        "max_tokens":  max_tokens,
+    }
+    try:
+        resp = requests.post(cfg["url"], json=payload, headers=headers, timeout=60)
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"], None
+    except requests.exceptions.Timeout:
+        return None, f"[{prov_name}] таймаут (60 сек) — пробую следующий..."
+    except requests.exceptions.ConnectionError:
+        return None, f"[{prov_name}] нет соединения"
+    except requests.exceptions.HTTPError as e:
+        return None, f"[{prov_name}] HTTP {e.response.status_code if e.response else ''}: {e}"
+    except Exception as e:
+        return None, f"[{prov_name}] {e}"
+
+
+def call_llm(messages: list[dict], max_tokens: int = 1024, temperature: float = 0.75,
+             provider: str = "auto") -> str:
+    """
+    Отправляет запрос в активный бэкенд.
+    provider: 'auto' | 'kobold' | 'llama' | 'OpenAI' | 'Google' | 'Groq' | 'NVIDIA' | 'DeepSeek'
+    """
+    # Явный облачный провайдер — пробуем только его, ошибка если не сработал
+    if provider in CLOUD_PROVIDERS:
+        result, err = _try_cloud_provider(provider, messages, max_tokens, temperature)
+        if result is not None:
+            return result
+        return err
+
+    # Локальный бэкенд (auto) или явный локальный (kobold/llama)
+    if provider == "auto":
+        backend = get_backend()
+    else:
+        backend = provider  # 'kobold' или 'llama'
+
+    if backend == "none":
+        # Авто-фолбэк: перебираем облачных провайдеров, пока не сработает
+        env = load_env()
+        errors = []
+        for prov_name, cfg in CLOUD_PROVIDERS.items():
+            if env.get(cfg["key_var"], "").strip():
+                print(f"[RAG] Локальный сервер не найден, пробую → {prov_name}")
+                result, err = _try_cloud_provider(prov_name, messages, max_tokens, temperature)
+                if result is not None:
+                    return result
+                errors.append(err)
+        if errors:
+            return f"[Ошибка] Перепробованы все облачные API — ни один не ответил:\n" + "\n".join(errors)
+        return "[Ошибка] Ни KoboldCpp, ни llama-server недоступны, и ни один облачный API-ключ не найден в .env."
+
+    url = KOBOLD_URL if backend == "kobold" else LLAMA_URL
+    payload = {
+        "model":       "local",
+        "messages":    messages,
+        "temperature": temperature,
+        "max_tokens":  max_tokens,
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=120)
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
+    except requests.exceptions.ConnectionError:
+        return "[Ошибка] Сервер недоступен."
+    except requests.exceptions.Timeout:
+        return "[Ошибка] Таймаут запроса (120 сек)."
+    except Exception as e:
+        return f"[Ошибка] {e}"
+
+
+def generate_rag_answer(question, context, style="реализм", language="русский", script_mode="художественный", narrator="короткий фильм", word_limit=300, sys_prompt="", timeline_techniques=None, cloud_provider="auto"):
+    # Инструкция по стилю
+    style_map = {
+        "реализм":          "Пиши реалистично, живым языком, без прикрас.",
+        "мрачный":          "Пиши в мрачном, тяжёлом тоне. Акцент на боли и безысходности.",
+        "юмор":             "Пиши с горьким юмором, самоиронией, абсурдом.",
+        "поток сознания":   "Пиши потоком сознания: обрывки мыслей, эмоции, без структуры.",
+    }
+    style_instr = style_map.get(style, style_map["реализм"])
+
+    # Режим генерации и язык вывода
+    if script_mode == "сценарий":
+        narrator_map = {
+            "короткий фильм":   "An LTX 2.3 Director prompt. Character: A man (40+), tired, no main narrator, no voice-over.",
+            "рассказ девушки":  "An LTX 2.3 Director prompt. Character and Narrator: A young girl, first-person view, voice-over narration.",
+            "рассказ парня":    "An LTX 2.3 Director prompt. Character and Narrator: A young guy, first-person view, voice-over narration.",
+            "рассказ старушки": "An LTX 2.3 Director prompt. Character and Narrator: An old woman, first-person view, voice-over narration.",
+            "рассказ старика":  "An LTX 2.3 Director prompt. Character and Narrator: An old man, first-person view, voice-over narration.",
+            "документация":     "An LTX 2.3 Director prompt. Documentary interview style: voice-over narrator introduces the topic and asks questions from off-screen, then the on-screen character responds with lip-sync dialogue, then the narrator comments and transitions. Balance: narrator setups and bridges between character answers. Both voices are used — narrator off-screen, character on-screen with lip-sync.",
+            "хоррор":           "An LTX 2.3 Director prompt. Horror style: dark, tense atmosphere, eerie ambient horror music, slow suspenseful camera, jump-scare pacing, unsettling sound design.",
+            "комедия":          "An LTX 2.3 Director prompt. Comedy style: bright, energetic, comedic timing, playful upbeat comedy music, exaggerated expressions, sitcom-like framing.",
+            "скетч":            "An LTX 2.3 Director prompt. Sketch comedy style: short comedic scene, live audience laughter track, quick cuts, punchline timing, theatrical camera.",
+        }
+        format_instr = narrator_map.get(narrator, narrator_map["короткий фильм"])
+        
+        task = (
+            f"You are an expert AI assistant specializing in text-to-video prompt engineering for ComfyUI and LTX-Video 2.3. "
+            f"Transform the context into highly optimized global and timeline-segmented prompts based on the baseline: {format_instr}. "
+            f"Follow LTX Director rules: Camera movement first in the sentence, use chronological markers ('then', 'and then'). "
+            f"CRITICAL FOR LIP-SYNC: For speech articulation, use the exact syntax: "
+            f"\"the character's lips move in perfect synchronization with the audio engine tracking the phonetic speech: '[DIALOGUE_TEXT]'\". "
+            f"To prevent text/subtitle artifacts on screen, never output raw language characters outside this technical lip-sync token. "
+            f"Do not include markdown scene headers like 'SZENE 1', output ONLY raw global prompt and timeline sequences."
+        )
+        dialogue_lang_map = {
+            "русский":      "Russian",
+            "немецкий":     "German",
+            "английский":   "English",
+            "испанский":    "Spanish",
+            "польский":     "Polish",
+            "нидерландский":"Dutch",
+            "французский":  "French",
+        }
+        dialogue_lang = dialogue_lang_map.get(language, "Russian")
+        lang_instr = (
+            f"All technical directives and scene descriptions MUST be in English. "
+            f"CRITICAL DIALOGUE LANGUAGE RULE: Generate ALL spoken dialogue text inside the lip-sync single quotes "
+            f"EXCLUSIVELY in {dialogue_lang} — translate if needed, never output dialogue in any other language. "
+            f"The source context may be in a different language — IGNORE that, always write dialogue in {dialogue_lang}."
+        )
+    else:
+        # Стандартный языковой маппинг для обычного текста
+        lang_map = {
+            "русский":      "Отвечай только на русском языке.",
+            "немецкий":    "Antworte nur auf Deutsch.",
+            "английский":  "Answer in English only.",
+            "испанский":  "Responde solo en español.",
+            "польский":    "Odpowiadaj tylko po polsku.",
+            "нидерландский": "Antwoord alleen in het Nederlands.",
+            "французский": "Réponds uniquement en français.",
+        }
+        lang_instr = lang_map.get(language, lang_map["русский"])
+        
+        if script_mode == "аналитический":
+            task = "Проанализируй тему, выдели закономерности и сделай выводы."
+        else:
+            task = "Создай оригинальный художественный текст на основе контекста. Не копируй дословно."
+
+    # Сборка финального системного промпта
+    if script_mode == "сценарий":
+        # Строим блок кинематографических приёмов по таймлайну
+        timeline_block = ""
+        if timeline_techniques and any(t for t in timeline_techniques):
+            part_pcts = ["0%-20%", "20%-40%", "40%-60%", "60%-80%", "80%-100%"]
+            lines = ["CINEMATOGRAPHY TIMELINE (strictly follow per segment):"]
+            for i, (pct, tech) in enumerate(zip(part_pcts, timeline_techniques)):
+                shot = f"{tech} shot" if tech else "Cinematic static or panning shot (default)"
+                lines.append(f"- Part {i+1} ({pct}): {shot}")
+            lines.append("For each segment, the camera direction MUST start with the specified technique.")
+            timeline_block = "\n".join(lines) + "\n"
+
+        system_prompt = (
+            f"{sys_prompt + chr(10) if sys_prompt else ''}"
+            f"{task} "
+            f"Atmosphere style: {style_instr} "
+            f"{lang_instr}\n"
+            f"{timeline_block}"
+        )
+    else:
+        system_prompt = (
+            f"{sys_prompt + chr(10) if sys_prompt else ''}"
+            f"Ты литературный ассистент. {task} "
+            f"Стиль: {style_instr} "
+            f"Объём: примерно {word_limit} слов. "
+            f"{lang_instr}"
+        )
+
+    user_prompt = (
+        f"Запрос: {question}\n\n"
+        f"Контекст из базы:\n{context}\n\n"
+        f"Напиши текст на {word_limit} слов."
+    )
+
+    answer = call_llm(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_prompt},
+        ],
+        max_tokens=word_limit * 3,
+        temperature=0.8 if script_mode == "художественный" else 0.4,
+        provider=cloud_provider,
+    )
+    return answer
+
+
+def generate_topics() -> str:
+    """Генерирует 10 тем на основе случайных чанков из всей базы."""
+    import random
+    collection = get_collection()
+    total = collection.count()
+    if total == 0:
+        return "[Ошибка] База пуста. Сначала обнови базу."
+
+    # Берём случайные ID из всей коллекции
+    all_ids = collection.get(include=[])['ids']
+    sample_ids = random.sample(all_ids, min(TOP_K, len(all_ids)))
+    result = collection.get(ids=sample_ids, include=["documents"])
+    chunks = result["documents"]
+
+    context = build_context(chunks)
+
+    prompt = (
+        "Используя только этот контекст, придумай 10 оригинальных тем для рассказов.\n"
+        "Темы должны быть художественными, эмоциональными, но без прямых цитат.\n"
+        "Дай только нумерованный список.\n\n"
+        f"Контекст:\n{context}"
+    )
+
+    return call_llm(
+        messages=[
+            {"role": "system", "content": "Ты генератор идей для художественных текстов."},
+            {"role": "user",   "content": prompt},
+        ],
+        max_tokens=600,
+        temperature=0.9,
+    )
+
+
+def clear_cache():
+    """Выгружает модель из памяти (освобождает RAM/VRAM)."""
+    global _model
+    if _model is not None:
+        del _model
+        _model = None
+        import gc
+        gc.collect()
+        return "[OK] Кэш модели очищен. При следующем запросе загрузится заново."
+    return "[OK] Модель и так не загружена."
+
+
+# ──────────────────────────────────────────────
+# СКАНЕР GGUF
+# ──────────────────────────────────────────────
+
+def scan_gguf(folder: str) -> list[str]:
+    """Сканирует папку и возвращает список путей к *.gguf файлам (пропускает vocab-файлы и мелкий мусор)."""
+    p = Path(folder)
+    if not p.exists():
+        return []
+    models = []
+    for f in sorted(p.rglob("*.gguf")):
+        # Пропускаем файлы токенизаторов (ggml-vocab-*) — это не модели
+        if "ggml-vocab-" in f.name:
+            continue
+        # Пропускаем файлы меньше 100 МБ — модели весят гигабайты
+        if f.stat().st_size < 100 * 1024 * 1024:
+            continue
+        models.append(str(f))
+    return models
