@@ -361,7 +361,7 @@ def call_llm(messages: list[dict], max_tokens: int = 1024, temperature: float = 
         return f"[Ошибка] {e}"
 
 
-def generate_rag_answer(question, context, style="реализм", language="русский", script_mode="художественный", narrator="короткий фильм", word_limit=300, sys_prompt="", timeline_techniques=None, cloud_provider="auto"):
+def generate_rag_answer(question, context, style="реализм", language="русский", script_mode="художественный", narrator="короткий фильм", word_limit=300, sys_prompt="", timeline_techniques=None, cloud_provider="auto", director_mode="нет"):
     # Инструкция по стилю
     style_map = {
         "реализм":          "Пиши реалистично, живым языком, без прикрас.",
@@ -383,6 +383,11 @@ def generate_rag_answer(question, context, style="реализм", language="р�
             "хоррор":           "An LTX 2.3 Director prompt. Horror style: dark, tense atmosphere, eerie ambient horror music, slow suspenseful camera, jump-scare pacing, unsettling sound design.",
             "комедия":          "An LTX 2.3 Director prompt. Comedy style: bright, energetic, comedic timing, playful upbeat comedy music, exaggerated expressions, sitcom-like framing.",
             "скетч":            "An LTX 2.3 Director prompt. Sketch comedy style: short comedic scene, live audience laughter track, quick cuts, punchline timing, theatrical camera.",
+            "sci-fi":           "An LTX 2.3 Director prompt. Sci-fi style: futuristic atmosphere, synthetic ambient soundscape, sleek metallic environments, holographic interfaces, slow atmospheric camera moves, blue/cold color grading, subtle sci-fi sound effects.",
+            "боевик":           "An LTX 2.3 Director prompt. Action movie style: fast-paced intense pacing, dynamic handheld camera, quick cuts, impactful sound design, adrenaline-driven, explosive set pieces, aggressive color grading.",
+            "немое кино":       "An LTX 2.3 Director prompt. Black-and-white silent film 1920s-30s style: no spoken dialogue, no lip-sync at all, grainy monochrome visuals, title cards for text, exaggerated theatrical acting, sped-up frame rate, vintage film scratches, ragtime piano soundtrack.",
+            "немое кино (фортепиано)": "An LTX 2.3 Director prompt. Black-and-white silent film 1920s-30s style with solo piano accompaniment: no spoken dialogue, no lip-sync at all, soft grainy monochrome visuals, title cards for text, gentle theatrical expressions, a single spotlight upright piano playing melancholic/romantic live accompaniment throughout, intimate atmosphere like a small cinema.",
+            "детектив":         "An LTX 2.3 Director prompt. Crime detective noir style: dark rainy city streets, Venetian blind shadows, trench coat atmosphere, jazz soundtrack, slow-burn pacing, voice-over inner monologue, high-contrast lighting, moral ambiguity.",
         }
         format_instr = narrator_map.get(narrator, narrator_map["короткий фильм"])
         
@@ -411,6 +416,24 @@ def generate_rag_answer(question, context, style="реализм", language="р�
             f"EXCLUSIVELY in {dialogue_lang} — translate if needed, never output dialogue in any other language. "
             f"The source context may be in a different language — IGNORE that, always write dialogue in {dialogue_lang}."
         )
+
+        # Director Mode — переопределяем task на структурированный формат
+        if director_mode == "Director Mode":
+            task = (
+                f"You are an LTX Director AI. Output a structured director's breakdown in this EXACT format:\n\n"
+                f"GLOBAL PROMPT:\n"
+                f"Hyper-realistic 4K cinematic. Skin textures show pores, flush responses, natural glistening sheen. "
+                f"Continuous camera movement with audible environmental sounds. "
+                f"Lighting and atmosphere: {style_instr}\n\n"
+                f"Then output exactly 5 numbered sequences (SEQUENCE 1 through SEQUENCE 5), each containing:\n"
+                f"- Director Node: (camera shot, framing, movement)\n"
+                f"- Cinematographer Directive: (lighting, focus, depth of field, color)\n"
+                f"- Audio Trigger: (ambient sound, breathing, music, environmental audio)\n"
+                f"- Dialogue Trigger: (ONLY if the scene has spoken words — whisper, internal, or direct speech using lip-sync syntax)\n\n"
+                f"Follow the baseline narrator style: {format_instr}\n"
+                f"IMPORTANT: No markdown headers like 'SCENE 1'. Use 'SEQUENCE 1:' format. "
+                f"The 5 sequences must form a coherent narrative arc from the context."
+            )
     else:
         # Стандартный языковой маппинг для обычного текста
         lang_map = {
@@ -442,13 +465,21 @@ def generate_rag_answer(question, context, style="реализм", language="р�
             lines.append("For each segment, the camera direction MUST start with the specified technique.")
             timeline_block = "\n".join(lines) + "\n"
 
-        system_prompt = (
-            f"{sys_prompt + chr(10) if sys_prompt else ''}"
-            f"{task} "
-            f"Atmosphere style: {style_instr} "
-            f"{lang_instr}\n"
-            f"{timeline_block}"
-        )
+        if director_mode == "Director Mode":
+            system_prompt = (
+                f"{sys_prompt + chr(10) if sys_prompt else ''}"
+                f"{task}\n"
+                f"{lang_instr}\n"
+                f"{timeline_block}"
+            )
+        else:
+            system_prompt = (
+                f"{sys_prompt + chr(10) if sys_prompt else ''}"
+                f"{task} "
+                f"Atmosphere style: {style_instr} "
+                f"{lang_instr}\n"
+                f"{timeline_block}"
+            )
     else:
         system_prompt = (
             f"{sys_prompt + chr(10) if sys_prompt else ''}"

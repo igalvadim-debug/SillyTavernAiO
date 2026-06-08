@@ -104,7 +104,7 @@ def load_system_prompt(path: str) -> tuple[str, str]:
 
 def do_generate(question: str, style: str, word_limit: int, mode: str,
                 language: str, script_mode: str, narrator: str,
-                cloud_provider: str, sys_prompt: str,
+                director_mode: str, cloud_provider: str, sys_prompt: str,
                 cb_0_0, cb_0_1, cb_0_2, cb_0_3, cb_0_4,
                 cb_1_0, cb_1_1, cb_1_2, cb_1_3, cb_1_4,
                 cb_2_0, cb_2_1, cb_2_2, cb_2_3, cb_2_4,
@@ -153,6 +153,7 @@ def do_generate(question: str, style: str, word_limit: int, mode: str,
         sys_prompt  = (sys_prompt or "").strip(),
         timeline_techniques = timeline_techniques,
         cloud_provider = cloud_provider,
+        director_mode = director_mode,
     )
 
     global _last_chunks
@@ -290,8 +291,14 @@ def build_ui():
                 )
                 narrator_dd = gr.Dropdown(
                     label   = "Рассказчик",
-                    choices = ["короткий фильм", "рассказ девушки", "рассказ парня", "рассказ старушки", "рассказ старика", "документация", "хоррор", "комедия", "скетч"],
+                    choices = ["короткий фильм", "рассказ девушки", "рассказ парня", "рассказ старушки", "рассказ старика", "документация", "хоррор", "комедия", "скетч", "sci-fi", "боевик", "немое кино", "немое кино (фортепиано)", "детектив"],
                     value   = "короткий фильм",
+                    visible = False,
+                )
+                director_dd = gr.Dropdown(
+                    label   = "Director Mode",
+                    choices = ["нет", "Director Mode"],
+                    value   = "нет",
                     visible = False,
                 )
                 word_sl  = gr.Slider(
@@ -426,15 +433,15 @@ def build_ui():
 
         gen_btn.click(
             fn      = do_generate,
-            inputs  = [question, style_dd, word_sl, mode_dd, lang_dd, script_dd, narrator_dd, cloud_dd, sys_prompt_box] + all_cbs,
+            inputs  = [question, style_dd, word_sl, mode_dd, lang_dd, script_dd, narrator_dd, director_dd, cloud_dd, sys_prompt_box] + all_cbs,
             outputs = [answer_box, chunks_box, backend_lbl],
         )
 
-        # Показываем narrator_dd и timeline_accordion только когда выбран сценарий
+        # Показываем narrator_dd, director_dd и timeline_column только когда выбран сценарий
         script_dd.change(
-            fn      = lambda v: (gr.update(visible=(v == "сценарий")), gr.update(visible=(v == "сценарий"))),
+            fn      = lambda v: (gr.update(visible=(v == "сценарий")), gr.update(visible=(v == "сценарий")), gr.update(visible=(v == "сценарий"))),
             inputs  = [script_dd],
-            outputs = [narrator_dd, timeline_column],
+            outputs = [narrator_dd, director_dd, timeline_column],
         )
 
         topics_btn.click(
