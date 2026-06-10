@@ -197,25 +197,44 @@ def start_llama_server(gguf_path: str, log_callback=None) -> bool:
 
     _llama_proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
 
-    # Ждём до 30 секунд пока сервер поднимется
+    # Warte bis zu 30 Sekunden
     for i in range(30):
         time.sleep(1)
+        # Pruefe ob Prozess fruehzeitig gestorben ist
+        if _llama_proc.poll() is not None:
+            output = _llama_proc.stdout.read()
+            msg = f"[RAG] llama-server abgestuerzt (exit {_llama_proc.returncode}):\n{output[-1000:]}"
+            print(msg)
+            if log_callback:
+                log_callback(msg)
+            _llama_proc = None
+            return False
         if llama_alive():
-            msg = f"[RAG] llama-server готов (через {i+1} сек)."
+            msg = f"[RAG] llama-server bereit (nach {i+1} sec)."
             print(msg)
             if log_callback:
                 log_callback(msg)
             return True
 
-    msg = "[RAG] llama-server не ответил за 30 секунд."
+    # Timeout — sammle Output
+    _llama_proc.terminate()
+    time.sleep(0.5)
+    output = ""
+    try:
+        output = _llama_proc.stdout.read()
+    except Exception:
+        pass
+    msg = f"[RAG] llama-server nicht gestartet nach 30 sec:\n{output[-500:]}"
     print(msg)
     if log_callback:
         log_callback(msg)
+    _llama_proc = None
     return False
 
 

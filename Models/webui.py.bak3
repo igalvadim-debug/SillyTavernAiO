@@ -147,14 +147,14 @@ def do_generate(question: str, style: str, word_limit: int, mode: str,
                 language: str, script_mode: str, narrator: str,
                 director_mode: str, n_sequences: int,
                 cloud_provider: str, sys_prompt: str,
-                img0, img1, img2, img3, img4, img5, img6, img7, img8, img9,
-                cb_0_0, cb_0_1, cb_0_2, cb_0_3, cb_0_4, cb_0_5, cb_0_6, cb_0_7, cb_0_8, cb_0_9,
-                cb_1_0, cb_1_1, cb_1_2, cb_1_3, cb_1_4, cb_1_5, cb_1_6, cb_1_7, cb_1_8, cb_1_9,
-                cb_2_0, cb_2_1, cb_2_2, cb_2_3, cb_2_4, cb_2_5, cb_2_6, cb_2_7, cb_2_8, cb_2_9,
-                cb_3_0, cb_3_1, cb_3_2, cb_3_3, cb_3_4, cb_3_5, cb_3_6, cb_3_7, cb_3_8, cb_3_9,
-                cb_4_0, cb_4_1, cb_4_2, cb_4_3, cb_4_4, cb_4_5, cb_4_6, cb_4_7, cb_4_8, cb_4_9):
+                img0, img1, img2, img3, img4,
+                cb_0_0, cb_0_1, cb_0_2, cb_0_3, cb_0_4,
+                cb_1_0, cb_1_1, cb_1_2, cb_1_3, cb_1_4,
+                cb_2_0, cb_2_1, cb_2_2, cb_2_3, cb_2_4,
+                cb_3_0, cb_3_1, cb_3_2, cb_3_3, cb_3_4,
+                cb_4_0, cb_4_1, cb_4_2, cb_4_3, cb_4_4):
     if not question.strip():
-        return "⚠️ Введи вопрос или тему.", "", "", backend_status(), gr.update(visible=False)
+        return "⚠️ Введи вопрос или тему.", "", "", backend_status()
 
     if script_mode == "сценарий":
         eff_script_mode = "сценарий"
@@ -165,14 +165,14 @@ def do_generate(question: str, style: str, word_limit: int, mode: str,
 
     technique_names = ["Dutch Angle", "Dolly Zoom", "Push-In", "Low-Angle", "POV"]
     cb_grid = [
-        [cb_0_0, cb_0_1, cb_0_2, cb_0_3, cb_0_4, cb_0_5, cb_0_6, cb_0_7, cb_0_8, cb_0_9],
-        [cb_1_0, cb_1_1, cb_1_2, cb_1_3, cb_1_4, cb_1_5, cb_1_6, cb_1_7, cb_1_8, cb_1_9],
-        [cb_2_0, cb_2_1, cb_2_2, cb_2_3, cb_2_4, cb_2_5, cb_2_6, cb_2_7, cb_2_8, cb_2_9],
-        [cb_3_0, cb_3_1, cb_3_2, cb_3_3, cb_3_4, cb_3_5, cb_3_6, cb_3_7, cb_3_8, cb_3_9],
-        [cb_4_0, cb_4_1, cb_4_2, cb_4_3, cb_4_4, cb_4_5, cb_4_6, cb_4_7, cb_4_8, cb_4_9],
+        [cb_0_0, cb_0_1, cb_0_2, cb_0_3, cb_0_4],
+        [cb_1_0, cb_1_1, cb_1_2, cb_1_3, cb_1_4],
+        [cb_2_0, cb_2_1, cb_2_2, cb_2_3, cb_2_4],
+        [cb_3_0, cb_3_1, cb_3_2, cb_3_3, cb_3_4],
+        [cb_4_0, cb_4_1, cb_4_2, cb_4_3, cb_4_4],
     ]
     timeline_techniques = []
-    for c in range(10):
+    for c in range(5):
         selected = None
         for r in range(5):
             if cb_grid[r][c]:
@@ -195,7 +195,7 @@ def do_generate(question: str, style: str, word_limit: int, mode: str,
         cloud_provider      = cloud_provider,
         director_mode       = director_mode,
         n_sequences         = int(n_sequences) if n_sequences else 5,
-        image_paths         = [img0, img1, img2, img3, img4, img5, img6, img7, img8, img9],
+        image_paths         = [img0, img1, img2, img3, img4],
     )
 
     # Перевод на русский если режим сценарий
@@ -206,7 +206,7 @@ def do_generate(question: str, style: str, word_limit: int, mode: str,
     global _last_chunks
     _last_chunks = chunks
     chunks_text  = "\n\n" + ("─" * 60) + "\n\n".join(chunks)
-    return answer, translation, chunks_text, backend_status(), gr.update(visible=bool(translation.strip()))
+    return answer, translation, chunks_text, backend_status()
 
 
 def do_topics(seed: str):
@@ -238,47 +238,21 @@ def do_create_project(question: str, narrator: str, n_sequences: int, cloud_prov
     return path, display
 
 
-def _make_export_subfolder(prompt_text: str) -> Path:
-    """Erstellt Unterordner in workflow/ basierend auf erstem Satz des Prompts + Timestamp."""
-    import re as _re
-    from datetime import datetime as _dt
-
-    base = Path(r"D:\claudeAgent\RAG\workflow")
-    base.mkdir(parents=True, exist_ok=True)
-
-    # Erste 4 Woerter als Slug
-    words = prompt_text.strip().split()
-    slug_words = []
-    for w in words[:4]:
-        clean = _re.sub(r'[^a-zA-Z0-9\u0400-\u04FF]', '', w)
-        if clean:
-            slug_words.append(clean.lower())
-    slug = "_".join(slug_words) if slug_words else "scene"
-    slug = slug[:40]
-
-    ts = _dt.now().strftime("%H%M")
-    folder_name = f"{slug}_{ts}"
-    folder = base / folder_name
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder
-
-
-def do_export(p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, prompt_text):
+def do_export(p0, p1, p2, p3, p4, prompt_text):
     """
-    Exportiert Bilder + Prompt:
-    • ComfyUiVid\\input\\ — Bilder (a_XXXX_.png, ...)
-    • workflow\\<prompt_slug>_HHMM\\ — Bilder + video.txt/novideo.txt
+    Exportiert Bilder + Prompt in workflow/ und ComfyUiVid/input.
+    Bilder: a_XXXX_.png, b_XXXX_.png, ...
+    Prompt: video.txt (oder novideo.txt wenn keine Bilder).
+    Überschreibt existierende Dateien.
     """
-    comfy_dir = Path(r"D:\ComfyUiVid\input")
+    workflow_dir = Path(r"D:\claudeAgent\RAG\workflow")
+    comfy_dir    = Path(r"D:\ComfyUiVid\input")
+    workflow_dir.mkdir(parents=True, exist_ok=True)
     comfy_dir.mkdir(parents=True, exist_ok=True)
 
-    content = (prompt_text or "").strip()
-    images  = [p0, p1, p2, p3, p4, p5, p6, p7, p8, p9]
-    slot_labels = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j']
-    letters = string.ascii_lowercase
-
-    # Projektordner
-    proj_dir = _make_export_subfolder(content) if content else Path(r"D:\claudeAgent\RAG\workflow")
+    images     = [p0, p1, p2, p3, p4]
+    slot_labels = ['a', 'b', 'c', 'd', 'e']
+    letters    = string.ascii_lowercase
 
     exported = 0
     for img_path, label in zip(images, slot_labels):
@@ -287,19 +261,21 @@ def do_export(p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, prompt_text):
             if src.exists():
                 suffix = ''.join(random.choices(letters, k=4))
                 new_name = f"{label}_{suffix}_.png"
-                shutil.copy2(src, comfy_dir / new_name)
-                shutil.copy2(src, proj_dir / new_name)
+                for dest_dir in [workflow_dir, comfy_dir]:
+                    dest = dest_dir / new_name
+                    shutil.copy2(src, dest)
                 exported += 1
 
     txt_name = "video.txt" if exported > 0 else "novideo.txt"
+    content = (prompt_text or "").strip()
     if content:
-        (proj_dir / txt_name).write_text(content, encoding="utf-8")
-        (comfy_dir / txt_name).write_text(content, encoding="utf-8")
+        for dest_dir in [workflow_dir, comfy_dir]:
+            (dest_dir / txt_name).write_text(content, encoding="utf-8")
 
     if exported > 0:
-        return f"✅ {exported} Bilder + {txt_name} → {proj_dir.name} & ComfyUiVid\\input"
+        return f"✅ Exportiert: {exported} Bild(er) + {txt_name} → workflow & ComfyUiVid\\input"
     else:
-        return f"⚠️ Keine Bilder — {txt_name} → {proj_dir.name}"
+        return f"⚠️ Keine Bilder gefunden — {txt_name} gespeichert"
 
 
 def do_json_workflow():
@@ -331,11 +307,11 @@ def do_json_workflow():
         return f"⚠️ Fehler: {e}"
 
 
-def do_controlnet(p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, prov):
+def do_controlnet(p0, p1, p2, p3, p4, prov):
     """
-    Generiert ControlNet Captions (Pose + Atmosphere) aus bis zu 10 Bildern.
+    Generiert ControlNet Captions (Pose + Atmosphere) aus 5 Bildern.
     """
-    images = [p0, p1, p2, p3, p4, p5, p6, p7, p8, p9]
+    images = [p0, p1, p2, p3, p4]
     if not any(images):
         return "⚠️ Bitte mindestens 1 Bild laden."
     try:
@@ -369,24 +345,25 @@ def save_controlnet(captions_text, negative_prompt):
     return f"✅ Gespeichert: {out_path} ({out_path.stat().st_size} bytes)"
 
 
-def export_answer_prompt(p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, prompt_text, with_photos: bool):
+def export_answer_prompt(p0, p1, p2, p3, p4, prompt_text, with_photos: bool):
     """
-    Exportiert den GENERIERTEN Prompt + optional Bilder.
-    with_photos=True  → ComfyUiVid\\input + workflow\\<slug>_HHMM\\ (Bilder + video.txt)
-    with_photos=False → ComfyUiVid\\input + workflow\\<slug>_HHMM\\ (nur novideo.txt)
+    Exportiert den GENERIERTEN Prompt (aus answer_box) + optional Bilder.
+    with_photos=True  → video.txt + Bilder (a_XXXX_.png, ...)
+    with_photos=False → nur novideo.txt (keine Bilder)
+    Ziele: workflow/ und ComfyUiVid/input/
     """
-    comfy_dir = Path(r"D:\ComfyUiVid\input")
+    workflow_dir = Path(r"D:\claudeAgent\RAG\workflow")
+    comfy_dir    = Path(r"D:\ComfyUiVid\input")
+    workflow_dir.mkdir(parents=True, exist_ok=True)
     comfy_dir.mkdir(parents=True, exist_ok=True)
 
-    images  = [p0, p1, p2, p3, p4, p5, p6, p7, p8, p9]
-    slot_labels = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j']
-    letters = string.ascii_lowercase
-    content = (prompt_text or "").strip()
+    images     = [p0, p1, p2, p3, p4]
+    slot_labels = ['a', 'b', 'c', 'd', 'e']
+    letters    = string.ascii_lowercase
+    content    = (prompt_text or "").strip()
 
     if not content:
         return "⚠️ Kein Prompt zum Exportieren — erst generieren."
-
-    proj_dir = _make_export_subfolder(content)
 
     if with_photos:
         exported = 0
@@ -396,23 +373,23 @@ def export_answer_prompt(p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, prompt_text, wi
                 if src.exists():
                     suffix = ''.join(random.choices(letters, k=4))
                     new_name = f"{label}_{suffix}_.png"
-                    shutil.copy2(src, comfy_dir / new_name)
-                    shutil.copy2(src, proj_dir / new_name)
+                    for dest_dir in [workflow_dir, comfy_dir]:
+                        shutil.copy2(src, dest_dir / new_name)
                     exported += 1
 
         txt_name = "video.txt" if exported > 0 else "novideo.txt"
-        (proj_dir / txt_name).write_text(content, encoding="utf-8")
-        (comfy_dir / txt_name).write_text(content, encoding="utf-8")
+        for dest_dir in [workflow_dir, comfy_dir]:
+            (dest_dir / txt_name).write_text(content, encoding="utf-8")
 
         if exported > 0:
-            return f"✅ Промт с фото: {exported} Bilder + {txt_name} → {proj_dir.name} & ComfyUiVid\\input"
+            return f"✅ Промт с фото: {exported} Bild(er) + {txt_name} → workflow & ComfyUiVid\\input"
         else:
-            return f"⚠️ Keine Bilder — {txt_name} → {proj_dir.name} (nur Prompt)"
+            return f"⚠️ Keine Bilder gefunden — {txt_name} gespeichert (nur Prompt)"
     else:
         txt_name = "novideo.txt"
-        (proj_dir / txt_name).write_text(content, encoding="utf-8")
-        (comfy_dir / txt_name).write_text(content, encoding="utf-8")
-        return f"✅ Промт ohne Fotos: {txt_name} → {proj_dir.name} & ComfyUiVid\\input ({len(content)} Zeichen)"
+        for dest_dir in [workflow_dir, comfy_dir]:
+            (dest_dir / txt_name).write_text(content, encoding="utf-8")
+        return f"✅ Промт ohne Fotos: {txt_name} → workflow & ComfyUiVid\\input ({len(content)} Zeichen)"
 
 
 def update_image_slots(n_sequences: int):
@@ -430,15 +407,15 @@ def update_image_slots(n_sequences: int):
 
     slot_labels = [
         f"🎥 {pcts[i]} {'(Старт)' if i == 0 else '(Финал)' if i == n-1 else ''}" if i < n else f"🎥 слот {i+1}"
-        for i in range(10)
+        for i in range(5)
     ]
 
     updates = []
-    for i in range(10):
+    for i in range(5):
         updates.append(gr.update(visible=(i < n), label=slot_labels[i]))
 
     col_labels = []
-    for i in range(10):
+    for i in range(5):
         if i < n:
             pct_label = pcts[i] if i < len(pcts) else f"Ч{i+1}"
             col_labels.append(gr.update(visible=True, value=f"**{pct_label}**"))
@@ -573,14 +550,14 @@ def build_ui():
                 )
                 n_seq_dd = gr.Dropdown(
                     label   = "🔢 Количество сцен (Sequences)",
-                    choices = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                    choices = [1, 2, 3, 4, 5],
                     value   = 5,
                     visible = False,
                 )
                 word_sl = gr.Slider(
                     label   = "Длина (слов)",
                     minimum = 50,
-                    maximum = 1200,
+                    maximum = 700,
                     step    = 25,
                     value   = 200,
                 )
@@ -600,30 +577,25 @@ def build_ui():
 
                 with gr.Row():
                     gr.Markdown("&nbsp;")
-                    tl_col_1  = gr.Markdown("**0%**")
-                    tl_col_2  = gr.Markdown("**11%**")
-                    tl_col_3  = gr.Markdown("**22%**")
-                    tl_col_4  = gr.Markdown("**33%**")
-                    tl_col_5  = gr.Markdown("**44%**")
-                    tl_col_6  = gr.Markdown("**56%**")
-                    tl_col_7  = gr.Markdown("**67%**")
-                    tl_col_8  = gr.Markdown("**78%**")
-                    tl_col_9  = gr.Markdown("**89%**")
-                    tl_col_10 = gr.Markdown("**100%**")
+                    tl_col_1 = gr.Markdown("**Ч1: Начало**")
+                    tl_col_2 = gr.Markdown("**Ч2: Развитие**")
+                    tl_col_3 = gr.Markdown("**Ч3: Кульминация 1**")
+                    tl_col_4 = gr.Markdown("**Ч4: Кульминация 2**")
+                    tl_col_5 = gr.Markdown("**Ч5: Финал**")
 
                 cbs = []
                 for r in range(5):
                     with gr.Row():
                         gr.Markdown(f"**{technique_labels[r]}**")
                         row_cbs = []
-                        for c in range(10):
+                        for c in range(5):
                             cb = gr.Checkbox(label="", value=False, interactive=True, container=False, min_width=40)
                             row_cbs.append(cb)
                         cbs.append(row_cbs)
 
         # Каскадная логика: только 1 чекбокс на колонку
         for r in range(5):
-            for c in range(10):
+            for c in range(5):
                 other_outputs = [cbs[rr][c] for rr in range(5) if rr != r]
                 def _make_cascade(row=r, col=c):
                     def _handler(checked):
@@ -658,7 +630,7 @@ def build_ui():
             # ── VIDEO-MODUS (bestehende Timeline-Elemente) ─────────────
             with gr.Column(visible=True) as video_col:
                 gr.Markdown(
-                    "Загрузи от 1 до 10 ключевых кадров. Пропущенные будут заполнены автоматически: "
+                    "Загрузи от 1 до 5 ключевых кадров. Пропущенные будут заполнены автоматически: "
                     "Florence-2 опишет кадры, LLM перепишет в LTX-промпты и сгенерирует переходы."
                 )
 
@@ -666,7 +638,7 @@ def build_ui():
                 with gr.Row():
                     seq_count_dd = gr.Dropdown(
                         label   = "🔢 Количество сцен (ключевых кадров)",
-                        choices = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                        choices = [1, 2, 3, 4, 5],
                         value   = 5,
                         scale   = 1,
                     )
@@ -680,12 +652,12 @@ def build_ui():
                 with gr.Row():
                     img_slots = [
                         gr.Image(
-                            label   = f"🎥 {['0% (Старт)', '11%', '22%', '33%', '44%', '56%', '67%', '78%', '89%', '100% (Финал)'][i]}",
+                            label   = f"🎥 {['0% (Старт)', '25%', '50%', '75%', '100% (Финал)'][i]}",
                             type    = "filepath",
                             height  = 180,
                             visible = True,
                         )
-                        for i in range(10)
+                        for i in range(5)
                     ]
 
                 with gr.Row():
@@ -728,12 +700,12 @@ def build_ui():
                 with gr.Row():
                     cn_img_slots = [
                         gr.Image(
-                            label   = f"🎥 {['0% (Start)', '11%', '22%', '33%', '44%', '56%', '67%', '78%', '89%', '100% (Final)'][i]}",
+                            label   = f"🎥 {['0% (Start)', '25%', '50%', '75%', '100% (Final)'][i]}",
                             type    = "filepath",
                             height  = 180,
                             visible = True,
                         )
-                        for i in range(10)
+                        for i in range(5)
                     ]
 
                 with gr.Row():
@@ -775,7 +747,7 @@ def build_ui():
                 )
                 project_seq_dd = gr.Dropdown(
                     label   = "Сцен в проекте",
-                    choices = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                    choices = [1, 2, 3, 4, 5],
                     value   = 5,
                     scale   = 1,
                 )
@@ -821,7 +793,7 @@ def build_ui():
         answer_export_status = gr.Textbox(label="Export Status", interactive=False, lines=1)
 
         # ── Перевод основного LTX-ответа (авто, если режим=сценарий) ─
-        with gr.Group(visible=False) as answer_translation_col:
+        with gr.Column(visible=False) as answer_translation_col:
             gr.Markdown("---")
             gr.Markdown("#### 🇷🇺 Перевод промпта на русский")
             answer_ru_box = gr.Textbox(
@@ -881,13 +853,13 @@ def build_ui():
 
         # ── Export des generierten Prompts (mit/ohne Fotos) ────────────
         export_prompt_photo_btn.click(
-            fn      = lambda p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, txt: export_answer_prompt(p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, txt, with_photos=True),
+            fn      = lambda p0, p1, p2, p3, p4, txt: export_answer_prompt(p0, p1, p2, p3, p4, txt, with_photos=True),
             inputs  = img_slots + [answer_box],
             outputs = [answer_export_status],
         )
 
         export_prompt_nophoto_btn.click(
-            fn      = lambda p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, txt: export_answer_prompt(p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, txt, with_photos=False),
+            fn      = lambda p0, p1, p2, p3, p4, txt: export_answer_prompt(p0, p1, p2, p3, p4, txt, with_photos=False),
             inputs  = img_slots + [answer_box],
             outputs = [answer_export_status],
         )
@@ -898,7 +870,13 @@ def build_ui():
             fn      = do_generate,
             inputs  = [question, style_dd, word_sl, mode_dd, lang_dd, script_dd,
                        narrator_dd, director_dd, n_seq_dd, cloud_dd, sys_prompt_box] + img_slots + all_cbs,
-            outputs = [answer_box, answer_ru_box, chunks_box, backend_lbl, answer_translation_col],
+            outputs = [answer_box, answer_ru_box, chunks_box, backend_lbl],
+        ).then(
+            fn      = lambda answer, translation: (
+                gr.update(visible=bool(translation.strip())),
+            ),
+            inputs  = [answer_box, answer_ru_box],
+            outputs = [answer_translation_col],
         )
 
         answer_copy_ru_btn.click(
@@ -941,7 +919,7 @@ def build_ui():
         )
 
         # ── СОБЫТИЯ: динамические image-слоты ─────────────────────────
-        tl_col_refs = [tl_col_1, tl_col_2, tl_col_3, tl_col_4, tl_col_5, tl_col_6, tl_col_7, tl_col_8, tl_col_9, tl_col_10]
+        tl_col_refs = [tl_col_1, tl_col_2, tl_col_3, tl_col_4, tl_col_5]
 
         seq_count_dd.change(
             fn      = update_image_slots,
@@ -950,11 +928,11 @@ def build_ui():
         )
 
         # ── СОБЫТИЯ: Мульти-кадровый таймлайн ─────────────────────────
-        def do_timeline(p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, prov):
+        def do_timeline(p0, p1, p2, p3, p4, prov):
             """Копирует изображения в стабильный кэш, затем вызывает Florence-2 + LLM."""
             stable_paths = [
                 _safe_copy_image(p, i)
-                for i, p in enumerate([p0, p1, p2, p3, p4, p5, p6, p7, p8, p9])
+                for i, p in enumerate([p0, p1, p2, p3, p4])
             ]
             try:
                 return rag_core.generate_image_timeline(
