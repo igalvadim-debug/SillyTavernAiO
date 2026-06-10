@@ -389,7 +389,7 @@ def load_music_narrator_styles() -> dict:
     return result
 
 
-def generate_rag_answer(question, context, style="реализм", language="русский", script_mode="художественный", narrator="короткий фильм", word_limit=300, sys_prompt="", timeline_techniques=None, cloud_provider="auto", director_mode="нет"):
+def generate_rag_answer(question, context, style="реализм", language="русский", script_mode="художественный", narrator="короткий фильм", word_limit=300, sys_prompt="", timeline_techniques=None, cloud_provider="auto", director_mode="нет", n_sequences=5, image_paths=None):
     # Инструкция по стилю
     style_map = {
         "реализм":          "Пиши реалистично, живым языком, без прикрас.",
@@ -398,6 +398,10 @@ def generate_rag_answer(question, context, style="реализм", language="р�
         "поток сознания":   "Пиши потоком сознания: обрывки мыслей, эмоции, без структуры.",
     }
     style_instr = style_map.get(style, style_map["реализм"])
+
+    # Vorab-Initialisierung (werden unten mit Foto-Daten gefuellt)
+    photo_count = 0
+    photo_scene_map = []
 
     # Режим генерации и язык вывода
     if script_mode == "сценарий":
@@ -427,14 +431,42 @@ def generate_rag_answer(question, context, style="реализм", language="р�
         narrator_map.update(load_music_narrator_styles())
         format_instr = narrator_map.get(narrator, narrator_map["короткий фильм"])
         
+        photo_mapping = ""
+        if photo_count > 0:
+            photo_mapping = (
+                f"\n\nFOTO-ZU-SZENE-ZUWEISUNG (UNBEDINGT EINHALTEN):\n"
+                + "\n".join(
+                    f"  SEQUENCE {idx} = FOTO {idx} ({fname}) — GENAU dieser Ort/diese Szene"
+                    for idx, (fname, _) in enumerate(photo_scene_map, start=1)
+                )
+                + f"\n  JEDES der {photo_count} Fotos MUSS als eigene Szene vorkommen. NICHTS auslassen."
+            )
+
         task = (
             f"You are an expert AI assistant specializing in text-to-video prompt engineering for ComfyUI and LTX-Video 2.3. "
             f"Transform the context into highly optimized global and timeline-segmented prompts based on the baseline: {format_instr}. "
             f"Follow LTX Director rules: Camera movement first in the sentence, use chronological markers ('then', 'and then'). "
             f"CRITICAL FOR LIP-SYNC: For speech articulation, use the exact syntax: "
             f"\"the character's lips move in perfect synchronization with the audio engine tracking the phonetic speech: '[DIALOGUE_TEXT]'\". "
-            f"To prevent text/subtitle artifacts on screen, never output raw language characters outside this technical lip-sync token. "
-            f"Do not include markdown scene headers like 'SZENE 1', output ONLY raw global prompt and timeline sequences."
+            f"To prevent text/subtitle artifacts on screen, never output raw language characters outside this technical lip-sync token."
+            f"{photo_mapping}"
+            f"\n\nOUTPUT FORMAT (MANDATORY — machine must parse this):\n"
+            f"---GLOBAL_PROMPT_START---\n"
+            f"[one paragraph describing overall visual atmosphere, lighting, audio tone]\n"
+            f"---GLOBAL_PROMPT_END---\n\n"
+            f"---SEQUENCE_1_START---\n"
+            f"[Director prompt for scene 1: camera movement, subject, action, lighting, audio]\n"
+            f"---SEQUENCE_1_END---\n\n"
+            f"...repeat for exactly {n_sequences} sequences...\n\n"
+            f"---SEQUENCE_{n_sequences}_START---\n"
+            f"[Director prompt for scene {n_sequences}]\n"
+            f"---SEQUENCE_{n_sequences}_END---\n\n"
+            f"RULES:\n"
+            f"- Use EXACTLY these delimiters: ---GLOBAL_PROMPT_START--- / ---GLOBAL_PROMPT_END---\n"
+            f"- Use EXACTLY these delimiters: ---SEQUENCE_N_START--- / ---SEQUENCE_N_END---\n"
+            f"- Output exactly {n_sequences} sequences, no more, no less.\n"
+            f"- Each sequence is ONE paragraph (2-4 sentences).\n"
+            f"- NO markdown, NO extra text outside delimiters."
         )
         dialogue_lang_map = {
             "русский":      "Russian",
@@ -476,20 +508,35 @@ def generate_rag_answer(question, context, style="реализм", language="р�
             }
             style_en = style_map_en.get(style, style_map_en["реализм"])
 
+            photo_mapping_dm = ""
+            if photo_count > 0:
+                photo_mapping_dm = (
+                    f"\n\nFOTO-ZU-SZENE-ZUWEISUNG (UNBEDINGT EINHALTEN):\n"
+                    + "\n".join(
+                        f"  SEQUENCE {idx} = FOTO {idx} ({fname}) — GENAU dieser Ort/diese Szene"
+                        for idx, (fname, _) in enumerate(photo_scene_map, start=1)
+                    )
+                    + f"\n  JEDES der {photo_count} Fotos MUSS als eigene Szene vorkommen. NICHTS auslassen."
+                )
+
             task = (
                 f"You are an LTX Director AI. Output a structured director's breakdown in this EXACT format:\n\n"
-                f"GLOBAL PROMPT:\n"
-                f"Generate a global prompt that captures the visual atmosphere, lighting, and audio tone "
-                f"based on the narrator style: {format_instr}\n"
-                f"Style direction: {style_en}\n"
-                f"Make the global prompt specific to the genre — do NOT use generic 'hyper-realistic 4K' unless it fits the genre.\n\n"
-                f"Then output exactly 5 numbered sequences (SEQUENCE 1 through SEQUENCE 5), each containing:\n"
-                f"- Director Node: (camera shot, framing, movement)\n"
-                f"- Cinematographer Directive: (lighting, focus, depth of field, color)\n"
-                f"- Audio Trigger: (ambient sound, breathing, music, environmental audio)\n"
-                f"- Dialogue Trigger: (ONLY if the scene has spoken words — whisper, internal, or direct speech using lip-sync syntax)\n\n"
-                f"IMPORTANT: No markdown headers. Use 'SEQUENCE 1:' format. "
-                f"The 5 sequences must form a coherent narrative arc from the context."
+                f"---GLOBAL_PROMPT_START---\n"
+                f"[one paragraph: visual atmosphere, lighting, audio tone for: {format_instr}. Style: {style_en}]\n"
+                f"---GLOBAL_PROMPT_END---\n\n"
+                f"Then output exactly {n_sequences} sequences (SEQUENCE 1 through SEQUENCE {n_sequences}), each:\n"
+                f"---SEQUENCE_N_START---\n"
+                f"Director Node: (camera shot, framing, movement)\n"
+                f"Cinematographer Directive: (lighting, focus, depth of field, color)\n"
+                f"Audio Trigger: (ambient sound, breathing, music, environmental audio)\n"
+                f"Dialogue Trigger: (ONLY if spoken words — use lip-sync syntax)\n"
+                f"---SEQUENCE_N_END---\n"
+                f"{photo_mapping_dm}\n\n"
+                f"RULES:\n"
+                f"- Use EXACTLY these delimiters. Replace N with the sequence number.\n"
+                f"- Output exactly {n_sequences} sequences, no more, no less.\n"
+                f"- No markdown headers. No extra text outside delimiters.\n"
+                f"- The sequences must form a coherent narrative arc."
             )
     else:
         # Стандартный языковой маппинг для обычного текста
@@ -546,9 +593,42 @@ def generate_rag_answer(question, context, style="реализм", language="р�
             f"{lang_instr}"
         )
 
+    # ── Bildbeschreibungen (falls Fotos hochgeladen) ────────────────
+    image_context = ""
+
+    if image_paths:
+        filled = [(i, p) for i, p in enumerate(image_paths) if p is not None]
+        if filled:
+            try:
+                from image_captioning import Florence2Captioner
+                captioner = Florence2Captioner()
+                try:
+                    for slot_idx, p in filled:
+                        raw = captioner.caption(p)
+                        fname = Path(p).name
+                        photo_scene_map.append((fname, raw))
+                    photo_count = len(photo_scene_map)
+
+                    # n_sequences ueberschreiben = Anzahl der Fotos
+                    n_sequences = photo_count
+
+                    # Jedes Foto wird EINER Szene zugewiesen
+                    lines = []
+                    lines.append(f"=== {photo_count} FOTOS — JEDES FOTO = EINE SZENE ===")
+                    for idx, (fname, cap) in enumerate(photo_scene_map, start=1):
+                        lines.append(f"FOTO {idx} ({fname}): {cap}")
+                        lines.append(f"  → DARAUS MUSS SEQUENCE {idx} WERDEN. Ort/Setting/Mood MUSS aus DIESEM Foto stammen.")
+                    lines.append("=== ENDE FOTOS — KEIN FOTO DARF FEHLEN ===")
+                    image_context = "\n".join(lines)
+                finally:
+                    captioner.unload()
+            except Exception as e:
+                image_context = f"\n\n[Foto-Analyse fehlgeschlagen: {e}]\n"
+
     user_prompt = (
         f"Запрос: {question}\n\n"
-        f"Контекст из базы:\n{context}\n\n"
+        f"Контекст из базы:\n{context}\n"
+        f"{image_context}\n"
         f"Напиши текст на {word_limit} слов."
     )
 
@@ -561,6 +641,64 @@ def generate_rag_answer(question, context, style="реализм", language="р�
         temperature=0.8 if script_mode == "художественный" else 0.4,
         provider=cloud_provider,
     )
+
+    # ── ZWEITER PASS: Selbstkontrolle (nur bei Szenario-Modus) ──────
+    if script_mode == "сценарий" and answer.strip():
+        photo_check = ""
+        if photo_count > 0:
+            photo_check = (
+                f"CRITICAL: Es gibt GENAU {photo_count} Fotos. "
+                f"Es MUSS GENAU {photo_count} SEQUENCES geben — nicht mehr, nicht weniger.\n"
+                + "\n".join(
+                    f"  SEQUENCE {idx} MUSS auf FOTO {idx} ({fname}) basieren: {cap[:80]}..."
+                    for idx, (fname, cap) in enumerate(photo_scene_map, start=1)
+                )
+                + "\n\n"
+            )
+
+        review_prompt = (
+            "You are a strict script supervisor. Review this video prompt for ERRORS and INCONSISTENCIES:\n\n"
+            f"{photo_check}"
+            "CHECKLIST:\n"
+            "1. FOTO-ZU-SZENE: JEDES Foto MUSS als GENAU EINE eigene Szene vorkommen. "
+            "Wenn 2 Fotos Paris zeigen → 2 Szenen ueber Paris. "
+            "Wenn Foto X einen bestimmten Ort zeigt → Szene X MUSS an diesem Ort spielen. "
+            "Fehlende Fotos = FAIL.\n"
+            "2. ANZAHL: Es muessen GENAU so viele SEQUENCES da sein wie Fotos. "
+            "Nicht mehr, nicht weniger.\n"
+            "3. TIME OF DAY: Sequences must have LOGICAL time progression. "
+            "No random jumps (morning→morning→night→morning). Flag if found.\n"
+            "4. ATMOSPHERE: Lighting/mood must transition smoothly. "
+            "No sudden jumps (bright room→dark room without transition). Flag if found.\n\n"
+            "OUTPUT FORMAT:\n"
+            "If NO errors found, output EXACTLY: PASS\n"
+            "If errors found, output:\n"
+            "FAIL: <list each error>\n"
+            "CORRECTED:\n"
+            "Then output the FULL corrected prompt with the SAME ---GLOBAL_PROMPT_START--- / ---SEQUENCE_N_START--- format.\n\n"
+            f"ORIGINAL IMAGE DESCRIPTIONS (these places MUST be in the prompt):\n{image_context}\n\n"
+            f"PROMPT TO REVIEW:\n{answer}"
+        )
+
+        review_result = call_llm(
+            messages=[
+                {"role": "system", "content": "You are a script supervisor. Review and correct video prompts. Be critical."},
+                {"role": "user",   "content": review_prompt},
+            ],
+            max_tokens=2000,
+            temperature=0.3,
+            provider=cloud_provider,
+        )
+
+        # Wenn der Review ein korrigiertes Prompt enthält, verwende es
+        if "CORRECTED:" in review_result:
+            corrected = review_result.split("CORRECTED:", 1)[1].strip()
+            if corrected and "---SEQUENCE_" in corrected:
+                answer = corrected
+        # Bei PASS: Original behalten, nur Info loggen
+        elif review_result.strip().startswith("PASS"):
+            pass  # answer bleibt unverändert
+
     return answer
 
 

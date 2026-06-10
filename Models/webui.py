@@ -145,7 +145,9 @@ def load_system_prompt(path: str) -> tuple[str, str]:
 
 def do_generate(question: str, style: str, word_limit: int, mode: str,
                 language: str, script_mode: str, narrator: str,
-                director_mode: str, cloud_provider: str, sys_prompt: str,
+                director_mode: str, n_sequences: int,
+                cloud_provider: str, sys_prompt: str,
+                img0, img1, img2, img3, img4,
                 cb_0_0, cb_0_1, cb_0_2, cb_0_3, cb_0_4,
                 cb_1_0, cb_1_1, cb_1_2, cb_1_3, cb_1_4,
                 cb_2_0, cb_2_1, cb_2_2, cb_2_3, cb_2_4,
@@ -192,6 +194,8 @@ def do_generate(question: str, style: str, word_limit: int, mode: str,
         timeline_techniques = timeline_techniques,
         cloud_provider      = cloud_provider,
         director_mode       = director_mode,
+        n_sequences         = int(n_sequences) if n_sequences else 5,
+        image_paths         = [img0, img1, img2, img3, img4],
     )
 
     # Перевод на русский если режим сценарий
@@ -339,6 +343,53 @@ def save_controlnet(captions_text, negative_prompt):
     out_path = workflow_dir / "controlnet.txt"
     out_path.write_text("\n".join(lines), encoding="utf-8")
     return f"✅ Gespeichert: {out_path} ({out_path.stat().st_size} bytes)"
+
+
+def export_answer_prompt(p0, p1, p2, p3, p4, prompt_text, with_photos: bool):
+    """
+    Exportiert den GENERIERTEN Prompt (aus answer_box) + optional Bilder.
+    with_photos=True  → video.txt + Bilder (a_XXXX_.png, ...)
+    with_photos=False → nur novideo.txt (keine Bilder)
+    Ziele: workflow/ und ComfyUiVid/input/
+    """
+    workflow_dir = Path(r"D:\claudeAgent\RAG\workflow")
+    comfy_dir    = Path(r"D:\ComfyUiVid\input")
+    workflow_dir.mkdir(parents=True, exist_ok=True)
+    comfy_dir.mkdir(parents=True, exist_ok=True)
+
+    images     = [p0, p1, p2, p3, p4]
+    slot_labels = ['a', 'b', 'c', 'd', 'e']
+    letters    = string.ascii_lowercase
+    content    = (prompt_text or "").strip()
+
+    if not content:
+        return "⚠️ Kein Prompt zum Exportieren — erst generieren."
+
+    if with_photos:
+        exported = 0
+        for img_path, label in zip(images, slot_labels):
+            if img_path:
+                src = Path(img_path)
+                if src.exists():
+                    suffix = ''.join(random.choices(letters, k=4))
+                    new_name = f"{label}_{suffix}_.png"
+                    for dest_dir in [workflow_dir, comfy_dir]:
+                        shutil.copy2(src, dest_dir / new_name)
+                    exported += 1
+
+        txt_name = "video.txt" if exported > 0 else "novideo.txt"
+        for dest_dir in [workflow_dir, comfy_dir]:
+            (dest_dir / txt_name).write_text(content, encoding="utf-8")
+
+        if exported > 0:
+            return f"✅ Промт с фото: {exported} Bild(er) + {txt_name} → workflow & ComfyUiVid\\input"
+        else:
+            return f"⚠️ Keine Bilder gefunden — {txt_name} gespeichert (nur Prompt)"
+    else:
+        txt_name = "novideo.txt"
+        for dest_dir in [workflow_dir, comfy_dir]:
+            (dest_dir / txt_name).write_text(content, encoding="utf-8")
+        return f"✅ Промт ohne Fotos: {txt_name} → workflow & ComfyUiVid\\input ({len(content)} Zeichen)"
 
 
 def update_image_slots(n_sequences: int):
@@ -495,6 +546,12 @@ def build_ui():
                     label   = "Director Mode",
                     choices = ["нет", "Director Mode"],
                     value   = "нет",
+                    visible = False,
+                )
+                n_seq_dd = gr.Dropdown(
+                    label   = "🔢 Количество сцен (Sequences)",
+                    choices = [1, 2, 3, 4, 5],
+                    value   = 5,
                     visible = False,
                 )
                 word_sl = gr.Slider(
@@ -730,6 +787,11 @@ def build_ui():
             )
             copy_btn = gr.Button("📋 Copy", scale=1, min_width=60)
 
+        with gr.Row():
+            export_prompt_photo_btn = gr.Button("🖼️ Промт с фото", variant="secondary", scale=1)
+            export_prompt_nophoto_btn = gr.Button("📝 Промт без фото", variant="secondary", scale=1)
+        answer_export_status = gr.Textbox(label="Export Status", interactive=False, lines=1)
+
         # ── Перевод основного LTX-ответа (авто, если режим=сценарий) ─
         with gr.Column(visible=False) as answer_translation_col:
             gr.Markdown("---")
@@ -789,12 +851,25 @@ def build_ui():
             js      = "(text) => { navigator.clipboard.writeText(text); }",
         )
 
+        # ── Export des generierten Prompts (mit/ohne Fotos) ────────────
+        export_prompt_photo_btn.click(
+            fn      = lambda p0, p1, p2, p3, p4, txt: export_answer_prompt(p0, p1, p2, p3, p4, txt, with_photos=True),
+            inputs  = img_slots + [answer_box],
+            outputs = [answer_export_status],
+        )
+
+        export_prompt_nophoto_btn.click(
+            fn      = lambda p0, p1, p2, p3, p4, txt: export_answer_prompt(p0, p1, p2, p3, p4, txt, with_photos=False),
+            inputs  = img_slots + [answer_box],
+            outputs = [answer_export_status],
+        )
+
         all_cbs = [cb for row in cbs for cb in row]
 
         gen_btn.click(
             fn      = do_generate,
             inputs  = [question, style_dd, word_sl, mode_dd, lang_dd, script_dd,
-                       narrator_dd, director_dd, cloud_dd, sys_prompt_box] + all_cbs,
+                       narrator_dd, director_dd, n_seq_dd, cloud_dd, sys_prompt_box] + img_slots + all_cbs,
             outputs = [answer_box, answer_ru_box, chunks_box, backend_lbl],
         ).then(
             fn      = lambda answer, translation: (
@@ -816,9 +891,10 @@ def build_ui():
                 gr.update(visible=(v == "сценарий")),
                 gr.update(visible=(v == "сценарий")),
                 gr.update(visible=(v == "сценарий")),
+                gr.update(visible=(v == "сценарий")),
             ),
             inputs  = [script_dd],
-            outputs = [narrator_dd, director_dd, timeline_column],
+            outputs = [narrator_dd, director_dd, n_seq_dd, timeline_column],
         )
 
         topics_btn.click(
