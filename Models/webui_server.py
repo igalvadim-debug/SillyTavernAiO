@@ -209,8 +209,8 @@ def do_generate(question: str, style: str, word_limit: int, mode: str,
     return answer, translation, chunks_text, backend_status(), gr.update(visible=bool(translation.strip()))
 
 
-def do_topics(seed: str):
-    result = rag_core.generate_topics()
+def do_topics(seed: str, cloud_provider: str = "auto"):
+    result = rag_core.generate_topics(seed=seed, cloud_provider=cloud_provider)
     return result, "", backend_status()
 
 
@@ -921,7 +921,7 @@ def build_ui():
 
         topics_btn.click(
             fn      = do_topics,
-            inputs  = [question],
+            inputs  = [question, cloud_dd],
             outputs = [answer_box, answer_ru_box, backend_lbl],
         )
 
