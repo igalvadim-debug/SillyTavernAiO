@@ -1,174 +1,243 @@
-# 🎬 RAG — Генератор сценариев и текстов
+# 🎬 RAG — KI-Videoproduktion: Szenario → FLUX → LTX → ComfyUI
 
-RAG-система с поиском по собственной базе знаний (ChromaDB), поддержкой локальных LLM (llama.cpp / KoboldCpp) и облачных API (OpenAI, Google, DeepSeek, NVIDIA NIM, OpenRouter, Groq). Умеет генерировать художественные тексты, аналитику и сценарии для LTX Video 2.3.
+RAG-System mit Vektordatenbank (ChromaDB), lokalen LLMs (llama.cpp / KoboldCpp) und Cloud-APIs (OpenAI, Google, DeepSeek, NVIDIA, OpenRouter, Groq). Generiert LTX-Video-Director-Prompts, FLUX-T2I-Prompts und ControlNet-Captions aus Text + Fotos — inklusive Selbstkontrolle auf Fehler.
 
 ---
 
-## 📁 Структура проекта
+## 📁 Struktur
 
 ```
 RAG/
-├── webui.py          # Gradio WebUI (основной интерфейс)
-├── rag_query.py      # CLI-чат
-├── rag_core.py       # Ядро: эмбеддинги, Chroma, LLM, генерация
-├── rag_index.py      # Индексация документов в ChromaDB
-├── update_db.py      # Скрипт обновления базы
-├── stats.py          # Статистика базы
-├── tokens.py         # Работа с токенами
-├── extract_to_md.py  # Конвертация в Markdown
-├── copilot.py        # Copilot-интеграция
+├── webui.py              # Gradio WebUI (Hauptinterface)
+├── rag_core.py           # Kern: Embeddings, Chroma, LLM, 2-Pass-Generator
+├── rag_index.py          # Indizierung in ChromaDB
+├── rag_query.py          # CLI-Chat
+├── update_db.py          # Datenbank-Update
+├── stats.py              # DB-Statistik
+├── tokens.py             # Token-Verwaltung
+├── extract_to_md.py      # Konvertierung → Markdown
+├── project_manager.py    # FLUX T2I Prompt-Generator
+├── image_captioning.py   # Florence-2 Bildbeschreibung
 │
-├── .env              # API-ключи и настройки
-├── requirements.txt  # Зависимости (sentence-transformers, chromadb, gradio, requests)
+├── workflow/             # ComfyUI-Integration
+│   ├── update_workflow.py  # JSON-Workflow-Updater
+│   ├── video_00009.json    # Workflow-Vorlage
+│   └── video.txt           # Generierte Prompts
 │
-├── model/            # SentenceTransformer (эмбеддинги)
-├── chroma_zaebalo/   # Векторная база ChromaDB
-├── docs/             # Исходные документы
+├── stylemusic.json       # 56 Musik-Stile (10 Kategorien)
+├── florence-2-large/     # Florence-2 Modell
+├── model/                # SentenceTransformer (Embeddings)
+├── chroma_zaebalo/       # ChromaDB Vektordaten
+├── docs/                 # Quelldokumente
+├── projects/             # FLUX-Projekt-Output
 │
-├── start.bat         # Запуск WebUI (portable miniforge)
-├── setup.bat         # Автоустановка miniforge + Python 3.11 + пакетов
-├── RAG.bat           # Запуск с llama-server + CLI
-│
-├── llama.cpp-master/ # llama.cpp (бинарники, модели)
-└── prompt.md         # Системный промпт (опционально)
+├── .env                  # API-Keys
+├── requirements.txt
+├── start.bat / setup.bat # Portable Start
+└── RAG.bat               # CLI-Start
 ```
 
 ---
 
-## ⚙️ Установка
+## ⚙️ Installation
 
-### Способ 1 — Portable (ничего не нужно)
+### Portable (empfohlen)
 
 ```bat
-setup.bat    # Один раз: скачает Miniforge, создаст окружение, установит пакеты
-start.bat    # Каждый запуск: WebUI на http://127.0.0.1:7860
+setup.bat    # Einmalig: Miniforge + Python 3.11 + Pakete
+start.bat    # WebUI → http://127.0.0.1:7860
 ```
 
-### Способ 2 — Ручной
+### Manuell
 
 ```bash
 pip install -r requirements.txt
-python webui.py     # WebUI на http://127.0.0.1:7860
-python rag_query.py # CLI-чат
+python webui.py
 ```
 
 ---
 
-## 🔌 Бэкенды LLM
+## 🔌 LLM-Backends
 
-Система сама определяет, через что генерировать:
+Automatische Erkennung in dieser Reihenfolge:
 
-1. **KoboldCpp** — если запущен на порту `5001`
-2. **llama-server** — если запущен на порту `8080`
-3. **Облачные API** — если локальный сервер не найден, авто-фолбэк на первый доступный ключ из `.env`
+| Priorität | Backend | Port/Status |
+|---|---|---|
+| 1 | **KoboldCpp** | Port 5001 |
+| 2 | **llama-server** | Port 8080 |
+| 3 | **Cloud-API** | Auto-Fallback auf ersten Key in `.env` |
 
-### .env (пример)
+### `.env`
 
 ```env
 DEEPSEEK_API_KEY=sk-...
 OPENROUTER_API_KEY=sk-or-...
 NVIDIA_NIM_API_KEY=nvapi-...
 OPENAI_API_KEY=
+GOOGLE_API_KEY=
 GROQ_API_KEY=
 ```
 
-Заполни хотя бы один ключ — система подхватит автоматически.
+Ein Key genügt — das System nimmt den ersten verfügbaren.
 
 ---
 
-## 🎛️ Интерфейс (WebUI)
+## 🎛️ WebUI — Funktionen
 
-### Основные настройки
+### 📝 Text-Generierung
 
-| Параметр | Описание |
+| Einstellung | Werte |
 |---|---|
-| **Стиль** | Реализм, мрачный, юмор, поток сознания |
-| **Режим** | Художественный / аналитический |
-| **Язык** | Русский, немецкий, английский, испанский, польский, нидерландский, французский |
-| **Формат LTX 2.3** | Обычный текст / сценарий для видео |
-| **Рассказчик** | Короткий фильм, от лица девушки/парня/старушки/старика, документация (voice-over) |
-| **Системный промпт** | Загрузка из `.md`/`.json` или ручной ввод |
+| Stil | Realismus / Düster / Humor / Bewusstseinsstrom |
+| Modus | Literarisch / Analytisch |
+| Sprache | RU, DE, EN, ES, PL, NL, FR |
+| Länge | 50–700 Wörter |
+| System-Prompt | Aus `.md`/`.json` laden oder direkt eingeben |
 
-### 🎥 Матрица киноприёмов (только для сценариев LTX)
+### 🎬 Szenario-Modus (LTX 2.3)
 
-При выборе «Формат LTX 2.3 → сценарий» появляется сетка **5×5**:
+Wird «Формат LTX 2.3 → сценарий» gewählt:
 
-- **Строки** — приёмы: Dutch Angle, Dolly Zoom, Push-In, Low-Angle, POV
-- **Колонки** — части фильма: Начало → Финал (5 отрезков по 20%)
-- Можно выбрать до одного приёма на каждый отрезок
-- Пустые части → стандартная съёмка
-- Приёмы автоматически вставляются в промпт для LLM и строго привязываются к таймлайну LTX
-
-### Кнопки
-
-| Кнопка | Действие |
+| Neue Elemente | Funktion |
 |---|---|
-| ✍️ **Сгенерировать** | Генерация текста/сценария |
-| 💡 **10 тем** | Генерация 10 идей для рассказов на основе базы |
-| 🔄 **Обновить базу** | Переиндексация документов из `docs/` |
-| 📊 **Статистика** | Количество чанков, размер базы |
-| 🧹 **Очистить кэш** | Выгрузить модель эмбеддингов из памяти |
+| **Рассказчик / Musik:Clip** | 70 Einträge: 14 Erzähler + 56 Musik-Stile aus `stylemusic.json` |
+| **Director Mode** | Strukturierte Ausgabe: Director Node / Cinematographer / Audio / Dialogue |
+| **🔢 Anzahl Szenen** | 1–5 (wird bei Fotos automatisch überschrieben) |
+| **🎥 Kamera-Matrix** | 5×5 Grid: Dutch Angle, Dolly Zoom, Push-In, Low-Angle, POV × 5 Zeitabschnitte |
+
+### 📸 Foto→Szene-Pipeline (NEU)
+
+```
+🖼️ 4 Fotos (2×Paris, 1×Miami, 1×Ballett)
+        ↓
+🔍 Florence-2 beschreibt jedes Foto
+        ↓
+🎯 n_sequences = 4 (automatisch, ignoriert UI-Dropdown)
+   SEQUENCE 1 = Foto 1 (Paris)
+   SEQUENCE 2 = Foto 2 (Paris)
+   SEQUENCE 3 = Foto 3 (Miami)
+   SEQUENCE 4 = Foto 4 (Ballett)
+        ↓
+✍️ Pass 1: LLM generiert 4 Szenen
+        ↓
+🔎 Pass 2: Supervisor prüft:
+   • Jedes Foto als eigene Szene?
+   • 2×Paris → 2 Szenen Paris?
+   • Time-Progression logisch?
+   • Atmosphere-Übergänge glatt?
+   • Bei Fehlern → automatische Korrektur
+```
+
+### 🖼️ Timeline (Multi-Frame)
+
+Im Akkordeon «Мульти-кадровый таймлайн»:
+
+| Modus | Funktion |
+|---|---|
+| **Video** | 1–5 Bilder → Florence-2 + LLM → LTX 2.3 Timeline-Prompts |
+| **Controlnet** | 1–5 Bilder → Pose + Atmosphere + Negative Prompt → `controlnet.txt` |
+
+**Buttons Timeline:**
+- ⚡ Generieren
+- 📋 Copy
+- 🌐 Übersetzen (RU)
+- 💾 Export (Bilder + Prompt → `workflow/` & `ComfyUiVid\input\`)
+- 🔄 JSON → Workflow (führt `update_workflow.py` aus)
+
+### 📁 Projekt-Manager (FLUX)
+
+- Erstellt Projektordner `projects/scenario_NAME_NN/`
+- Generiert **FLUX T2I-Prompts** im cinematischen Prosa-Stil (100–180 Wörter)
+- Qualitäts-Boilerplate: `masterwork, masterpiece, best quality, ultra HD, 8k resolution, …`
+- Speichert `scene_1.txt` … `scene_N.txt` + `project_meta.json`
+
+### 💾 Export unter der Antwort
+
+| Button | Ziel |
+|---|---|
+| 🖼️ **Промт с фото** | Bilder (`a_XXXX_.png`…) + Prompt als `video.txt` → `workflow/` & `ComfyUiVid\input\` |
+| 📝 **Промт без фото** | Nur Prompt als `novideo.txt` → beide Ordner |
 
 ---
 
-## 🧠 Как работает RAG
+## 🔄 ComfyUI-Workflow
 
 ```
-Вопрос пользователя
+1. 🖼️ Промт с фото → video.txt + Bilder in workflow/
+2. 🔄 JSON → Workflow  → update_workflow.py:
+   • Scannt Bilder alphabetisch
+   • Parst video.txt (3 Formate: Delimiter / SEQUENCE / Timeline)
+   • Updated LTXDirector-Nodes
+   • Output: modified_LTX_Dir.json
+3. In ComfyUI laden
+```
+
+---
+
+## 🎵 Musik-Stile
+
+`stylemusic.json` enthält **56 Stile** in **10 Kategorien**:
+
+| Kategorie | Stile |
+|---|---|
+| Cinematic | soundtrack, emotional piano, dark ambient, epic orchestral, sci-fi synth… |
+| Dark/Gothic | gothic rock, dark folk, slavic pagan, nordic folk, ritual ambient… |
+| Rock/Metal | classic rock, heavy rock, industrial, grunge… |
+| Electronic | synthwave, retrowave, techno, deep house, drum & bass… |
+| Pop | soft pop, indie pop, electro-pop, acoustic pop… |
+| Hip-Hop | trap, oldschool rap, rhythmic spoken… |
+| World/Ethno | slavic folk, balkan, japanese shakuhachi, middle-eastern oud… |
+| Emotional/Minimal | minimal piano, soft acoustic, whisper-style, intimate storytelling… |
+| Futuristic | cyberpunk synth, glitch ambience, dystopian drone… |
+| Uplifting | happy pop, upbeat acoustic, bright indie, cheerful folk… |
+
+Wird automatisch in `narrator_map` geladen → LLM nutzt den jeweiligen Musik-Prompt.
+
+---
+
+## 🧠 Wie RAG funktioniert
+
+```
+Frage + Fotos (optional)
     ↓
-SentenceTransformer → эмбеддинг вопроса
+SentenceTransformer → Embedding
     ↓
-ChromaDB → поиск top-7 релевантных чанков
+ChromaDB → Top-7 relevante Chunks
     ↓
-Сборка контекста + системный промпт + настройки
+Florence-2 → Bildbeschreibungen (wenn Fotos)
     ↓
-LLM (локальный или облачный) → генерация ответа
+Kontext + System-Prompt + Stil + Musik + Fotos
+    ↓
+LLM Pass 1 → Generierung
+    ↓
+LLM Pass 2 → Selbstkontrolle (nur Szenario-Modus)
+    ↓
+Strukturierte Ausgabe (---GLOBAL_PROMPT_START--- / ---SEQUENCE_N_START---)
 ```
 
 ---
 
-## 🎬 Пример: сценарий LTX 2.3
-
-**Настройки:** Стиль «мрачный», Режим «сценарий», Язык «немецкий», Рассказчик «короткий фильм», Приёмы: Ч1=Dutch Angle, Ч3=Push-In
-
-**Вывод (фрагмент):**
+## 📦 Abhängigkeiten
 
 ```
-00:00-00:05 Cinematic Dutch angle shot. The camera slowly tilts as a man
-sits in a darkened room, his hollow eyes opening. The character's lips move
-in perfect synchronization with the audio engine tracking the phonetic
-speech: 'Es ist vorbei. Alles umsonst.'
-
-00:05-00:10 The camera pans across the room, revealing empty bottles, and
-then cuts to a close-up of his trembling hands...
+sentence-transformers   # Embeddings (model/)
+chromadb                # Vektordatenbank
+gradio                  # WebUI
+requests                # HTTP-APIs
+Pillow                  # Bildverarbeitung
+torch                   # Florence-2
+transformers            # Florence-2 + Embeddings
 ```
 
 ---
 
-## 🖥️ CLI-режим
+## 🔧 Wartung
 
-```bash
-python rag_query.py
-```
-
-Команды: `темы`, `стат`, `выход`. Всё остальное — вопрос к RAG.
-
----
-
-## 📦 Зависимости
-
-```
-sentence-transformers  # Эмбеддинги (локальная модель в model/)
-chromadb               # Векторная база
-gradio                 # WebUI
-requests               # HTTP-запросы к API
-```
-
----
-
-## 🔧 Обслуживание
-
-- **Добавить документы** — положи `.txt`/`.md` в папку `docs/` и нажми «Обновить базу»
-- **Сменить модель эмбеддингов** — замени содержимое папки `model/` на другую SentenceTransformer-модель
-- **Очистить базу** — удали папку `chroma_zaebalo/` и переиндексируй
-- **Сменить облачный API** — отредактируй `.env`
+| Aufgabe | Wie |
+|---|---|
+| Dokumente hinzufügen | `.txt`/`.md` in `docs/` → «Обновить базу» |
+| Embedding-Modell tauschen | `model/` ersetzen |
+| DB zurücksetzen | `chroma_zaebalo/` löschen → neu indizieren |
+| Cloud-API wechseln | `.env` editieren |
+| Musik-Stile erweitern | `stylemusic.json` editieren |
+| Workflow-Vorlage | `workflow/video_00009.json` ersetzen |
