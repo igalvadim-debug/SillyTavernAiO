@@ -10,59 +10,13 @@ webui.py — Gradio-интерфейс для RAG-проекта.
 import gradio as gr
 from pathlib import Path
 import threading
-import shutil
-import random
-import string
-import subprocess
-import json
 
 import rag_core
 import update_db
 import stats
 import project_manager
 
-BASE_DIR     = Path(__file__).parent
-UPLOAD_CACHE = BASE_DIR / "_upload_cache"
-UPLOAD_CACHE.mkdir(exist_ok=True)
-
-
-def get_music_style_choices() -> list[str]:
-    """Liest stylemusic.json und gibt alle 'music: ...' Keys als Liste zurück."""
-    style_path = BASE_DIR / "stylemusic.json"
-    if not style_path.exists():
-        return []
-    try:
-        data = json.loads(style_path.read_text(encoding="utf-8"))
-        styles = data.get("ltx_music_styles", [])
-    except Exception:
-        return []
-    result = []
-    for cat in styles:
-        for name in cat.get("styles", []):
-            result.append(f"music: {name}")
-    return result
-
-
-def _safe_copy_image(path: str | None, slot_idx: int) -> str | None:
-    """
-    Gradio 5.x сохраняет загруженные файлы во временную папку uvicorn
-    и иногда удаляет их до того как наш код их читает.
-    Копируем файл в стабильный _upload_cache/ при получении.
-    Возвращает путь к стабильной копии или None.
-    """
-    if not path:
-        return None
-    src = Path(path)
-    if not src.exists():
-        print(f"[RAG] ⚠️ Слот {slot_idx}: файл не найден: {path}")
-        return None
-    try:
-        dst = UPLOAD_CACHE / f"slot_{slot_idx}{src.suffix}"
-        shutil.copy2(src, dst)
-        return str(dst)
-    except Exception as e:
-        print(f"[RAG] ⚠️ Слот {slot_idx}: ошибка копирования: {e}")
-        return str(src)  # фолбэк — оригинальный путь
+BASE_DIR = Path(__file__).parent
 
 # ──────────────────────────────────────────────
 # СОСТОЯНИЕ
@@ -234,113 +188,6 @@ def do_create_project(question: str, narrator: str, n_sequences: int, cloud_prov
     return path, display
 
 
-def do_export(p0, p1, p2, p3, p4, prompt_text):
-    """
-    Exportiert Bilder + Prompt in workflow/ und ComfyUiVid/input.
-    Bilder: a_XXXX_.png, b_XXXX_.png, ...
-    Prompt: video.txt (oder novideo.txt wenn keine Bilder).
-    Überschreibt existierende Dateien.
-    """
-    workflow_dir = Path(r"D:\claudeAgent\RAG\workflow")
-    comfy_dir    = Path(r"D:\ComfyUiVid\input")
-    workflow_dir.mkdir(parents=True, exist_ok=True)
-    comfy_dir.mkdir(parents=True, exist_ok=True)
-
-    images     = [p0, p1, p2, p3, p4]
-    slot_labels = ['a', 'b', 'c', 'd', 'e']
-    letters    = string.ascii_lowercase
-
-    exported = 0
-    for img_path, label in zip(images, slot_labels):
-        if img_path:
-            src = Path(img_path)
-            if src.exists():
-                suffix = ''.join(random.choices(letters, k=4))
-                new_name = f"{label}_{suffix}_.png"
-                for dest_dir in [workflow_dir, comfy_dir]:
-                    dest = dest_dir / new_name
-                    shutil.copy2(src, dest)
-                exported += 1
-
-    txt_name = "video.txt" if exported > 0 else "novideo.txt"
-    content = (prompt_text or "").strip()
-    if content:
-        for dest_dir in [workflow_dir, comfy_dir]:
-            (dest_dir / txt_name).write_text(content, encoding="utf-8")
-
-    if exported > 0:
-        return f"✅ Exportiert: {exported} Bild(er) + {txt_name} → workflow & ComfyUiVid\\input"
-    else:
-        return f"⚠️ Keine Bilder gefunden — {txt_name} gespeichert"
-
-
-def do_json_workflow():
-    """Führt D:\\claudeAgent\\RAG\\workflow\\update_workflow.py aus."""
-    script = Path(r"D:\claudeAgent\RAG\workflow\update_workflow.py")
-    if not script.exists():
-        return f"⚠️ Script nicht gefunden: {script}"
-    try:
-        result = subprocess.run(
-            ["python", str(script)],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            cwd=str(script.parent),
-        )
-        out = result.stdout.strip()
-        err = result.stderr.strip()
-        parts = []
-        if out:
-            parts.append(f"stdout:\n{out}")
-        if err:
-            parts.append(f"stderr:\n{err}")
-        if not parts:
-            parts.append("✅ Script beendet (keine Ausgabe).")
-        return "\n\n".join(parts)
-    except subprocess.TimeoutExpired:
-        return "⚠️ Timeout (120s) — Script läuft zu lange."
-    except Exception as e:
-        return f"⚠️ Fehler: {e}"
-
-
-def do_controlnet(p0, p1, p2, p3, p4, prov):
-    """
-    Generiert ControlNet Captions (Pose + Atmosphere) aus 5 Bildern.
-    """
-    images = [p0, p1, p2, p3, p4]
-    if not any(images):
-        return "⚠️ Bitte mindestens 1 Bild laden."
-    try:
-        return rag_core.generate_controlnet_captions(
-            image_paths    = images,
-            cloud_provider = prov,
-        )
-    except Exception as e:
-        return f"⚠️ Fehler: {e}"
-
-
-def save_controlnet(captions_text, negative_prompt):
-    """
-    Speichert ControlNet Captions + zusaetzlichen User-Negative-Prompt
-    als controlnet.txt in D:\\claudeAgent\\RAG\\workflow\\.
-    """
-    workflow_dir = Path(r"D:\claudeAgent\RAG\workflow")
-    workflow_dir.mkdir(parents=True, exist_ok=True)
-
-    if not captions_text.strip():
-        return "⚠️ Keine Captions zum Speichern — erst generieren."
-
-    lines = [captions_text.strip()]
-    if negative_prompt.strip():
-        lines.append("")
-        lines.append("USER NEGATIVE PROMPT (zusaetzlich):")
-        lines.append(negative_prompt.strip())
-
-    out_path = workflow_dir / "controlnet.txt"
-    out_path.write_text("\n".join(lines), encoding="utf-8")
-    return f"✅ Gespeichert: {out_path} ({out_path.stat().st_size} bytes)"
-
-
 def update_image_slots(n_sequences: int):
     """
     Возвращает обновления видимости для 5 image-слотов и 5 timeline-колонок
@@ -477,17 +324,16 @@ def build_ui():
                     choices = ["нет", "сценарий"],
                     value   = "нет",
                 )
-                base_narrators = [
-                    "короткий фильм", "рассказ девушки", "рассказ парня",
-                    "рассказ старушки", "рассказ старика", "документация",
-                    "хоррор", "комедия", "скетч", "sci-fi", "боевик",
-                    "немое кино", "немое кино (фортепиано)", "детектив",
-                    "Talkshow",
-                ]
-                music_narrators = get_music_style_choices()
                 narrator_dd = gr.Dropdown(
-                    label   = "Рассказчик / Musik:Clip",
-                    choices = base_narrators + music_narrators,
+                    label   = "Рассказчик",
+                    choices = [
+                        "короткий фильм", "рассказ девушки", "рассказ парня",
+                        "рассказ старушки", "рассказ старика", "документация",
+                        "хоррор", "комедия", "скетч", "sci-fi", "боевик",
+                        "немое кино", "немое кино (фортепиано)", "детектив",
+                        "music: rock concert", "music: pop concert", "Talkshow",
+                        "music: русский шансон", "music: latino pop", "music: latin reggaeton",
+                    ],
                     value   = "короткий фильм",
                     visible = False,
                 )
@@ -556,123 +402,59 @@ def build_ui():
         # ── БЛОК: Мульти-кадровый таймлайн (Florence-2 + LLM) ─────────
         gr.Markdown("---")
         with gr.Accordion("🖼️ Мульти-кадровый таймлайн (T2I / I2V для LTX 2.3)", open=False):
-            # ── Mode-Umschalter: Video / ControlNet ────────────────────
+            gr.Markdown(
+                "Загрузи от 1 до 5 ключевых кадров. Пропущенные будут заполнены автоматически: "
+                "Florence-2 опишет кадры, LLM перепишет в LTX-промпты и сгенерирует переходы."
+            )
+
+            # ── Выбор количества сцен ──────────────────────────────────
             with gr.Row():
-                img_mode_dd = gr.Dropdown(
-                    label   = "🎯 Modus",
-                    choices = ["Video", "Controlnet"],
-                    value   = "Video",
+                seq_count_dd = gr.Dropdown(
+                    label   = "🔢 Количество сцен (ключевых кадров)",
+                    choices = [1, 2, 3, 4, 5],
+                    value   = 5,
                     scale   = 1,
                 )
                 gr.Markdown(
-                    "<small>**Video** = LTX 2.3 Timeline-Prompts<br>"
-                    "**Controlnet** = Pose + Atmosphere fuer ComfyUI</small>",
+                    "<small>Определяет число слотов и разделов таймлайна.<br>"
+                    "3 сцены → 0% / 50% / 100% и т.д.</small>",
                     scale=3,
                 )
 
-            # ── VIDEO-MODUS (bestehende Timeline-Elemente) ─────────────
-            with gr.Column(visible=True) as video_col:
-                gr.Markdown(
-                    "Загрузи от 1 до 5 ключевых кадров. Пропущенные будут заполнены автоматически: "
-                    "Florence-2 опишет кадры, LLM перепишет в LTX-промпты и сгенерирует переходы."
-                )
-
-                # ── Выбор количества сцен ──────────────────────────────
-                with gr.Row():
-                    seq_count_dd = gr.Dropdown(
-                        label   = "🔢 Количество сцен (ключевых кадров)",
-                        choices = [1, 2, 3, 4, 5],
-                        value   = 5,
-                        scale   = 1,
+            # ── 5 динамических image-слотов ───────────────────────────
+            with gr.Row():
+                img_slots = [
+                    gr.Image(
+                        label     = f"🎥 {['0% (Старт)', '25%', '50%', '75%', '100% (Финал)'][i]}",
+                        type      = "filepath",
+                        height    = 180,
+                        visible   = True,
                     )
-                    gr.Markdown(
-                        "<small>Определяет число слотов и разделов таймлайна.<br>"
-                        "3 сцены → 0% / 50% / 100% и т.д.</small>",
-                        scale=3,
-                    )
+                    for i in range(5)
+                ]
 
-                # ── 5 динамических image-слотов ────────────────────────
-                with gr.Row():
-                    img_slots = [
-                        gr.Image(
-                            label   = f"🎥 {['0% (Старт)', '25%', '50%', '75%', '100% (Финал)'][i]}",
-                            type    = "filepath",
-                            height  = 180,
-                            visible = True,
-                        )
-                        for i in range(5)
-                    ]
+            with gr.Row():
+                timeline_gen_btn  = gr.Button("⚡ Сгенерировать сквозной видео-промпт", variant="primary", scale=2)
+                timeline_copy_btn = gr.Button("📋 Copy", scale=1, min_width=80)
 
-                with gr.Row():
-                    timeline_gen_btn  = gr.Button("⚡ Сгенерировать сквозной видео-промпт", variant="primary", scale=2)
-                    timeline_copy_btn = gr.Button("📋 Copy", scale=1, min_width=80)
+            timeline_out = gr.Textbox(
+                label       = "🎬 Матрица промптов LTX 2.3",
+                lines       = 12,
+                interactive = False,
+                placeholder = "Здесь появятся готовые [0%]…[100%] промпты...",
+            )
 
-                timeline_out = gr.Textbox(
-                    label       = "🎬 Матрица промптов LTX 2.3",
-                    lines       = 12,
-                    interactive = False,
-                    placeholder = "Здесь появятся готовые [0%]…[100%] промпты...",
-                )
-
-                # ── Export & JSON ──────────────────────────────────────
-                with gr.Row():
-                    export_btn = gr.Button("💾 Export (Bilder + Prompt)", variant="secondary", scale=2)
-                    json_btn   = gr.Button("🔄 JSON → Workflow", variant="secondary", scale=1)
-                export_status = gr.Textbox(label="Export / JSON Status", interactive=False, lines=2)
-
-                # ── Перевод LTX-промпта на русский ────────────────────
-                gr.Markdown("---")
-                with gr.Row():
-                    translate_timeline_btn = gr.Button("🌐 Перевести промпт на русский", variant="secondary", scale=1, min_width=200)
-                    timeline_copy_ru_btn   = gr.Button("📋 Copy перевод", scale=1, min_width=120)
-                timeline_ru_out = gr.Textbox(
-                    label       = "🇷🇺 Перевод видео-промпта на русский",
-                    lines       = 10,
-                    interactive = False,
-                    placeholder = "Нажми кнопку выше — перевод появится здесь...",
-                )
-
-            # ── CONTROLNET-MODUS ───────────────────────────────────────
-            with gr.Column(visible=False) as controlnet_col:
-                gr.Markdown(
-                    "**ControlNet Captioning**: Florence-2 analysiert jedes Bild, "
-                    "LLM extrahiert POSE + ATMOSPHERE als komma-separierte Tags."
-                )
-
-                # ── Image-Slots (eigene, unabhaengig vom Video-Modus) ──
-                with gr.Row():
-                    cn_img_slots = [
-                        gr.Image(
-                            label   = f"🎥 {['0% (Start)', '25%', '50%', '75%', '100% (Final)'][i]}",
-                            type    = "filepath",
-                            height  = 180,
-                            visible = True,
-                        )
-                        for i in range(5)
-                    ]
-
-                with gr.Row():
-                    cn_gen_btn = gr.Button("🎭 ControlNet Captions generieren", variant="primary", scale=2)
-                    cn_copy_btn = gr.Button("📋 Copy", scale=1, min_width=80)
-
-                cn_out = gr.Textbox(
-                    label       = "🎭 ControlNet Captions (Pose + Atmosphere)",
-                    lines       = 14,
-                    interactive = False,
-                    placeholder = "POSE: standing, arms crossed, ...\nATMOSPHERE: cinematic lighting, dark mood, ...",
-                )
-
-                with gr.Row():
-                    cn_negative = gr.Textbox(
-                        label       = "❌ Negative Prompt",
-                        lines       = 3,
-                        interactive = True,
-                        placeholder = "low quality, blurry, distorted, deformed, bad anatomy, watermark, text, ...",
-                    )
-
-                with gr.Row():
-                    cn_save_btn = gr.Button("💾 Save controlnet.txt → workflow/", variant="secondary", scale=2)
-                cn_status = gr.Textbox(label="Save Status", interactive=False, lines=1)
+            # ── Перевод LTX-промпта на русский ───────────────────────
+            gr.Markdown("---")
+            with gr.Row():
+                translate_timeline_btn = gr.Button("🌐 Перевести промпт на русский", variant="secondary", scale=1, min_width=200)
+                timeline_copy_ru_btn   = gr.Button("📋 Copy перевод", scale=1, min_width=120)
+            timeline_ru_out = gr.Textbox(
+                label       = "🇷🇺 Перевод видео-промпта на русский",
+                lines       = 10,
+                interactive = False,
+                placeholder = "Нажми кнопку выше — перевод появится здесь...",
+            )
 
         # ── БЛОК: Проект-менеджер FLUX ────────────────────────────────
         gr.Markdown("---")
@@ -852,22 +634,11 @@ def build_ui():
         )
 
         # ── СОБЫТИЯ: Мульти-кадровый таймлайн ─────────────────────────
-        def do_timeline(p0, p1, p2, p3, p4, prov):
-            """Копирует изображения в стабильный кэш, затем вызывает Florence-2 + LLM."""
-            stable_paths = [
-                _safe_copy_image(p, i)
-                for i, p in enumerate([p0, p1, p2, p3, p4])
-            ]
-            try:
-                return rag_core.generate_image_timeline(
-                    image_paths    = stable_paths,
-                    cloud_provider = prov,
-                )
-            except Exception as e:
-                return f"[Ошибка при генерации таймлайна]: {e}"
-
         timeline_gen_btn.click(
-            fn      = do_timeline,
+            fn      = lambda p0, p1, p2, p3, p4, prov: rag_core.generate_image_timeline(
+                image_paths    = [p0, p1, p2, p3, p4],
+                cloud_provider = prov,
+            ),
             inputs  = img_slots + [cloud_dd],
             outputs = [timeline_out],
         )
@@ -877,18 +648,6 @@ def build_ui():
             inputs  = [timeline_out],
             outputs = [],
             js      = "(text) => { navigator.clipboard.writeText(text); }",
-        )
-
-        export_btn.click(
-            fn      = do_export,
-            inputs  = img_slots + [timeline_out],
-            outputs = [export_status],
-        )
-
-        json_btn.click(
-            fn      = do_json_workflow,
-            inputs  = [],
-            outputs = [export_status],
         )
 
         translate_timeline_btn.click(
@@ -902,36 +661,6 @@ def build_ui():
             inputs  = [timeline_ru_out],
             outputs = [],
             js      = "(text) => { navigator.clipboard.writeText(text); }",
-        )
-
-        # ── СОБЫТИЯ: Mode-Umschalter Video / ControlNet ────────────────
-        img_mode_dd.change(
-            fn      = lambda v: (
-                gr.update(visible=(v == "Video")),
-                gr.update(visible=(v == "Controlnet")),
-            ),
-            inputs  = [img_mode_dd],
-            outputs = [video_col, controlnet_col],
-        )
-
-        # ── СОБЫТИЯ: ControlNet ────────────────────────────────────────
-        cn_gen_btn.click(
-            fn      = do_controlnet,
-            inputs  = cn_img_slots + [cloud_dd],
-            outputs = [cn_out],
-        )
-
-        cn_copy_btn.click(
-            fn      = None,
-            inputs  = [cn_out],
-            outputs = [],
-            js      = "(text) => { navigator.clipboard.writeText(text); }",
-        )
-
-        cn_save_btn.click(
-            fn      = save_controlnet,
-            inputs  = [cn_out, cn_negative],
-            outputs = [cn_status],
         )
 
         # ── СОБЫТИЯ: Проект-менеджер ───────────────────────────────────

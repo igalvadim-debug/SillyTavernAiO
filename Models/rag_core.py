@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import time
+import json
 import requests
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
@@ -15,11 +16,12 @@ import chromadb
 # ──────────────────────────────────────────────
 # ПУТИ (все относительные от папки этого файла)
 # ──────────────────────────────────────────────
-BASE_DIR    = Path(__file__).parent
-MODEL_DIR   = BASE_DIR / "model"
-CHROMA_DIR  = BASE_DIR / "chroma_zaebalo"
-DOCS_DIR    = BASE_DIR / "docs"
-ENV_FILE    = BASE_DIR / ".env"
+BASE_DIR        = Path(__file__).parent
+MODEL_DIR       = BASE_DIR / "model"
+CHROMA_DIR      = BASE_DIR / "chroma_zaebalo"
+DOCS_DIR        = BASE_DIR / "docs"
+ENV_FILE        = BASE_DIR / ".env"
+STYLEMUSIC_PATH = BASE_DIR / "stylemusic.json"
 
 # ──────────────────────────────────────────────
 # ЧТЕНИЕ .env (портативно— без системных переменных)
@@ -361,6 +363,32 @@ def call_llm(messages: list[dict], max_tokens: int = 1024, temperature: float = 
         return f"[Ошибка] {e}"
 
 
+def load_music_narrator_styles() -> dict:
+    """
+    Загружает музыкальные стили из stylemusic.json и возвращает словарь
+    в формате narrator_map: {"music: style_name": "An LTX 2.3 Director prompt. ..."}.
+    """
+    if not STYLEMUSIC_PATH.exists():
+        return {}
+    try:
+        data = json.loads(STYLEMUSIC_PATH.read_text(encoding="utf-8"))
+        styles = data.get("ltx_music_styles", [])
+    except Exception:
+        return {}
+
+    result = {}
+    for cat in styles:
+        category = cat.get("category", "music")
+        prompt = cat.get("prompt", "")
+        for style_name in cat.get("styles", []):
+            key = f"music: {style_name}"
+            cat_label = category.replace("_", " ").title()
+            result[key] = (
+                f"An LTX 2.3 Director prompt. {cat_label} music video style: {prompt}"
+            )
+    return result
+
+
 def generate_rag_answer(question, context, style="реализм", language="русский", script_mode="художественный", narrator="короткий фильм", word_limit=300, sys_prompt="", timeline_techniques=None, cloud_provider="auto", director_mode="нет"):
     # Инструкция по стилю
     style_map = {
@@ -395,6 +423,8 @@ def generate_rag_answer(question, context, style="реализм", language="р�
             "music: latino pop":      "An LTX 2.3 Director prompt. Latino pop music video style: sunny vibrant colors, beach and urban settings, salsa/reggaeton dance energy, warm golden light, festive atmosphere, sensual camera moves, Spanish-language lip-sync, tropical glow.",
             "music: latin reggaeton": "An LTX 2.3 Director prompt. Latin reggaeton music video style: urban street vibe, neon lights, heavy bass drops, perreo dance culture, low-angle shots, slow-motion booty drops, tropical nightlife, dembow rhythm energy, sensual camera.",
         }
+        # Динамически подгружаем музыкальные стили из stylemusic.json
+        narrator_map.update(load_music_narrator_styles())
         format_instr = narrator_map.get(narrator, narrator_map["короткий фильм"])
         
         task = (
@@ -583,6 +613,184 @@ def clear_cache():
 # СКАНЕР GGUF
 # ──────────────────────────────────────────────
 
+# ──────────────────────────────────────────────
+# МУЛЬТИ-КАДРОВЫЙ ТАЙМЛАЙН (Florence-2 + LLM)
+# ──────────────────────────────────────────────
+
+def generate_image_timeline(image_paths: list, cloud_provider: str = "auto") -> str:
+    """
+    Принимает список из 5 путей к файлам (или None для пропущенных кадров).
+    Запускает Florence-2 для описания, затем LLM для переписывания в LTX-промпты.
+    Возвращает готовую матрицу промптов в виде строки.
+    """
+    try:
+        from image_captioning import generate_timeline_prompts
+    except ImportError as e:
+        return f"[Ошибка] Не удалось импортировать image_captioning.py: {e}"
+
+    # Оборачиваем call_llm в простой callable для передачи в image_captioning
+    def llm_fn(messages: list) -> str:
+        return call_llm(
+            messages=messages,
+            max_tokens=512,
+            temperature=0.6,
+            provider=cloud_provider,
+        )
+
+    try:
+        result = generate_timeline_prompts(image_paths, llm_fn)
+    except Exception as e:
+        result = f"[Ошибка при генерации таймлайна]: {e}"
+
+    return result
+
+
+# ──────────────────────────────────────────────
+# CONTROLNET CAPTIONING (Pose + Atmosphere)
+# ──────────────────────────────────────────────
+
+CN_POSE_SYSTEM = (
+    "You are a ControlNet OpenPose prompt engineer. "
+    "From the image description, extract the EXACT body pose as an ultra-detailed, "
+    "anatomically precise English description.\n\n"
+    "Describe EVERY body part:\n"
+    "- FULL BODY: standing/sitting/kneeling/crouching/lying, weight distribution, body lean, spine curvature\n"
+    "- HEAD: tilt, rotation, chin up/down/level, gaze direction (looking up/down/left/right/at viewer/into distance)\n"
+    "- ARMS: each arm separately — raised/lowered/bent/straight, elbow angle, wrist position\n"
+    "- HANDS: open/closed/fist/pointing/gripping/relaxed, finger positions, what they hold or touch\n"
+    "- LEGS: each leg separately — straight/bent/crossed/wide stance/kneeling, knee angle, foot placement/rotation\n"
+    "- FACIAL: expression (neutral/smiling/serious/angry/surprised/fearful), mouth open/closed, eyebrow position\n\n"
+    "Format: ONE continuous, highly detailed sentence (40-80 words). Start with the overall stance, "
+    "then describe each body region in flowing English. NO bullet points, NO tags, NO labels.\n\n"
+    "Example: \"standing upright with weight shifted onto the right leg, left knee slightly bent and foot turned outward, "
+    "torso leaning forward at a 15-degree angle, head tilted down with chin lowered and gaze fixed on the ground, "
+    "right arm raised to chest height with elbow bent at 90 degrees and hand open palm-up, "
+    "left arm hanging straight down with hand clenched into a loose fist, "
+    "neutral facial expression with lips slightly parted and eyebrows relaxed\""
+)
+
+CN_ATMOS_SYSTEM = (
+    "You are a cinematographer writing ControlNet atmosphere prompts. "
+    "From the image description, write a richly detailed, cinematic atmosphere description.\n\n"
+    "Describe ALL of the following in flowing English prose (60-100 words):\n"
+    "- LIGHTING: source, direction, quality (hard/soft/diffused), color temperature (warm/cool/neutral), intensity, shadows\n"
+    "- ENVIRONMENT: location type, architectural details, natural elements, ground/surface textures\n"
+    "- WEATHER & TIME: time of day, weather conditions, fog/rain/snow/clear, season\n"
+    "- COLOR PALETTE: dominant colors, saturation, contrast, color grading style\n"
+    "- MOOD & STYLE: emotional tone, genre atmosphere, visual references\n"
+    "- TEXTURES: prominent materials and surface qualities in the scene\n\n"
+    "Format: ONE rich, flowing paragraph. NO bullet points, NO tags, NO labels. "
+    "Write like a director of photography describing a shot.\n\n"
+    "Example: \"cinematic lighting with a single warm tungsten key light from the upper left casting long dramatic shadows "
+    "across a rain-slicked cobblestone street at blue hour, the wet stones reflecting the amber glow of a distant streetlamp, "
+    "cool teal ambient fill from the overcast sky overhead, heavy fog diffusing the background into soft grey silhouettes, "
+    "desaturated color palette with muted blues and warm orange highlights, film noir atmosphere with high contrast chiaroscuro, "
+    "gritty urban textures of weathered brick walls and rusted iron railings\""
+)
+
+CN_NEGATIVE_SYSTEM = (
+    "You are a ControlNet negative prompt engineer. "
+    "Based on the image description and the extracted pose/atmosphere, "
+    "generate a comprehensive negative prompt for ComfyUI ControlNet.\n\n"
+    "Include terms that prevent: anatomical errors, bad posing, lighting artifacts, "
+    "unwanted styles, quality issues, and anything that contradicts the desired scene.\n\n"
+    "Format: comma-separated English tags, 20-35 tags. NO explanations, NO labels."
+)
+
+
+def generate_controlnet_captions(image_paths: list, cloud_provider: str = "auto") -> str:
+    """
+    Analysiert bis zu 5 Bilder mit Florence-2 und extrahiert via LLM
+    extrem detaillierte Pose + Atmosphere + Negative Prompt fuer ComfyUI ControlNet.
+    """
+    try:
+        from image_captioning import Florence2Captioner
+    except ImportError as e:
+        return f"[Fehler] image_captioning.py nicht importierbar: {e}"
+
+    filled = [p for p in image_paths if p is not None]
+    if not filled:
+        return "[Fehler] Keine Bilder geladen - bitte mindestens 1 Bild hochladen."
+
+    captioner = Florence2Captioner()
+    all_raw = {}  # path -> raw caption
+    results = []
+
+    try:
+        # Phase 1: Florence-2 captions
+        for i, path in enumerate(image_paths):
+            if path is None:
+                continue
+            raw = captioner.caption(path)
+            all_raw[path] = raw
+
+        # Phase 2: Pose + Atmosphere pro Bild
+        for i, path in enumerate(image_paths):
+            if path is None:
+                continue
+            raw = all_raw[path]
+
+            pose = call_llm(
+                messages=[
+                    {"role": "system", "content": CN_POSE_SYSTEM},
+                    {"role": "user",   "content": f"Image description:\n{raw}"},
+                ],
+                max_tokens=250,
+                temperature=0.25,
+                provider=cloud_provider,
+            )
+
+            atmos = call_llm(
+                messages=[
+                    {"role": "system", "content": CN_ATMOS_SYSTEM},
+                    {"role": "user",   "content": f"Image description:\n{raw}"},
+                ],
+                max_tokens=300,
+                temperature=0.35,
+                provider=cloud_provider,
+            )
+
+            results.append((i, Path(path).name, pose.strip(), atmos.strip()))
+
+        # Phase 3: Globaler Negative Prompt (aus allen Roh-Beschreibungen)
+        combined_raw = "\n---\n".join(all_raw.values())
+        negative = call_llm(
+            messages=[
+                {"role": "system", "content": CN_NEGATIVE_SYSTEM},
+                {"role": "user",   "content": f"Image descriptions:\n{combined_raw}"},
+            ],
+            max_tokens=200,
+            temperature=0.3,
+            provider=cloud_provider,
+        )
+    finally:
+        captioner.unload()
+
+    labels = ["[0% Start]", "[25%]", "[50%]", "[75%]", "[100% Final]"]
+
+    lines = [
+        "=" * 60,
+        "CONTROLNET CAPTIONS",
+        "=" * 60,
+        "",
+    ]
+    for i, fname, pose, atmos in results:
+        lines.append(f"IMAGE {labels[i]}  --  {fname}")
+        lines.append("-" * 50)
+        lines.append(f"POSE: {pose}")
+        lines.append("")
+        lines.append(f"ATMOSPHERE: {atmos}")
+        lines.append("")
+
+    lines.append("=" * 60)
+    lines.append("GLOBAL NEGATIVE PROMPT")
+    lines.append("-" * 50)
+    lines.append(negative.strip())
+    lines.append("")
+    lines.append("=" * 60)
+    return "\n".join(lines)
+
+
 def scan_gguf(folder: str) -> list[str]:
     """Сканирует папку и возвращает список путей к *.gguf файлам (пропускает vocab-файлы и мелкий мусор)."""
     p = Path(folder)
@@ -598,3 +806,37 @@ def scan_gguf(folder: str) -> list[str]:
             continue
         models.append(str(f))
     return models
+
+
+# ──────────────────────────────────────────────
+# ПЕРЕВОД ПРОМПТОВ НА РУССКИЙ
+# ──────────────────────────────────────────────
+
+def translate_to_russian(text: str, cloud_provider: str = "auto") -> str:
+    """
+    Переводит готовый видео-промпт (LTX / FLUX / любой) на русский язык.
+    Возвращает полный перевод без сокращений.
+    """
+    if not text.strip():
+        return ""
+
+    system_prompt = (
+        "Ты профессиональный переводчик технических промптов для ИИ-видео. "
+        "Переведи текст на русский язык полностью и точно. "
+        "Технические термины переводи понятно: "
+        "'shallow depth of field' → 'малая глубина резкости', "
+        "'anamorphic lens flare' → 'блики анаморфотного объектива', "
+        "'color graded' → 'с цветокоррекцией', и так далее. "
+        "Не сокращай, не интерпретируй — только точный перевод. "
+        "Не добавляй пояснений, вступлений или послесловий — только сам перевод."
+    )
+
+    return call_llm(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": f"Переведи на русский:\n\n{text}"},
+        ],
+        max_tokens=2000,
+        temperature=0.2,
+        provider=cloud_provider,
+    )
