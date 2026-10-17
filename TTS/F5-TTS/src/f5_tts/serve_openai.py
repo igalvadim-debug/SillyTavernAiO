@@ -46,12 +46,10 @@ from f5_tts.infer import voices_store
 
 
 def _patched_chunk_text(text, max_chars=135):
-    """Chunking tuned for long Russian reference clips.
+    """Return sentence chunks using a UTF-8 byte budget of at least 170.
 
-    The upstream formula derives max_chars from the reference audio; with 8-14 s refs
-    it drops to ~20 *bytes* (~10 Cyrillic chars), which splits sentences mid-word and
-    produces many audible cross-fade seams. We keep the same sentence-boundary logic
-    but enforce a sane minimum of ~90 Cyrillic characters per chunk.
+    ``max_chars`` is measured in bytes. Individual sentences are never split to
+    meet the budget, so chunks may exceed it. Empty input returns an empty list.
     """
     return utils_infer._orig_chunk_text(text, max_chars=max(max_chars, 170))
 
@@ -104,7 +102,15 @@ _MD_ITAL_RE = re.compile(r"(?<![\w])([*_])(?![*_\s])([^*_\n]+?)(?<=[^\s*_])\1(?!
 
 
 def _clean_text(text):
-    """Make chat/markdown text speakable (Russian-friendly)."""
+    """Return chat text with common Markdown and roleplay noise removed.
+
+    Remove fenced code, bare HTTP(S) URLs, square-bracket notes, multiword
+    asterisk actions, and matched emoji/symbol ranges. Retain inline code, link
+    labels, bold and single-word italic text, and the contents of short, unnested
+    parentheses without their markers. Normalize whitespace and append a period
+    if nonempty text lacks recognized terminal punctuation. Falsy input or text
+    removed entirely by cleaning returns an empty string.
+    """
     if not text:
         return ""
     # code blocks and inline code -> drop entirely (never meant to be spoken)
@@ -141,14 +147,13 @@ def _clean_text(text):
 
 
 def _sanitize_segments(segments):
-    """Post-process the upstream chunking result.
+    """Return stripped segments merged and given terminal punctuation.
 
-    Two problems with the default chunking when the reference clip is long (our local
-    voices are 8-14 s of Russian speech):
-      1. max_chars becomes tiny (~20 chars for a 12 s ref) -> dozens of micro-batches,
-         each synthesized separately -> choppy delivery and audible cross-fade seams.
-      2. chunks may end mid-word or without terminal punctuation -> clipped endings.
-    We merge short neighbours up to ~90 chars and make sure every piece ends cleanly.
+    Merge adjacent nonblank segments when their combined UTF-8 length is at most
+    180 bytes, excluding the new joining space. Individual segments are never
+    split, so output may exceed that budget. Strip trailing commas and append a
+    period where terminal punctuation is missing. Return the original input if
+    it is falsy or processing leaves no nonempty segments.
     """
     if not segments:
         return segments
@@ -251,12 +256,16 @@ def _resolve_voice(name):
 
 
 def _trim_edges(wav, sr, max_head=0.25, max_tail=0.45, thresh_db=-45.0):
-    """Trim leading/trailing silence of the *generated* audio (in-memory).
+    """Return flattened float32 audio cropped around detected active frames.
 
-    duration_scale > 1 deliberately adds tail room; without a trim that becomes
-    dead air before SillyTavern plays the next line. We keep at most max_head /
-    max_tail seconds of edge silence so breaths/intro reverb survive but long gaps
-    disappear. Pure signal processing - no paths, no model changes.
+    ``sr`` is the sample rate in Hz; ``max_head`` and ``max_tail`` specify seconds
+    of padding before the first and after the last active frame. Activity uses
+    10 ms frame RMS above ``thresh_db`` dB relative to the waveform's peak
+    amplitude, with a small positive floor. Any incomplete final frame is excluded
+    from detection. Empty audio or audio with no active frames is not cropped.
+
+    Raises:
+        ValueError: If nonempty audio is shorter than one analysis frame.
     """
     arr = np.asarray(wav, dtype=np.float32).reshape(-1)
     if arr.size == 0:
@@ -320,6 +329,20 @@ def list_voices():
 
 @app.post("/v1/audio/speech")
 def speech(req: SpeechRequest, request: Request):
+    """Synthesize cleaned chat text with a saved voice and return encoded audio.
+
+    Serialize model inference across requests and use the default voice when the
+    requested voice is missing or unknown. A missing or zero ``nfe_step`` uses
+    the server default; ``length_scale`` overrides its duration multiplier.
+    Always trim generated audio edges. Unsupported formats or failed compressed
+    encoding fall back to WAV. Errors from voice storage, trimming, or final WAV
+    encoding propagate.
+
+    Raises:
+        HTTPException: With status 503 if the model is not loaded, 400 for input
+            empty after cleaning or no available default voice, or 500 for
+            inference failures.
+    """
     if _tts is None:
         raise HTTPException(status_code=503, detail="Model not loaded yet")
     text = _clean_text(req.input)
@@ -409,6 +432,15 @@ def _warmup():
 
 
 def main():
+    """Load the model from CLI options, optionally warm up, and serve HTTP.
+
+    Replace default checkpoint and vocabulary URLs with local files when the
+    local checkpoint exists and, for the vocabulary, its local file also exists.
+    Retain nondefault CLI paths. Remote resources may be downloaded. Update the
+    shared model and inference defaults, then block while Uvicorn runs. Resource
+    resolution and model loading errors propagate; warmup inference failures are
+    caught so startup can continue.
+    """
     global _tts, _default_nfe, _length_scale
     parser = argparse.ArgumentParser(description="OpenAI-compatible F5-TTS server")
     parser.add_argument("--host", default="127.0.0.1")
