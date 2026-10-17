@@ -135,7 +135,7 @@ def _clean_text(text):
     text = re.sub(r"(?<!\d)[*_](?!\d)", "", text)
     # stage directions / system notes in brackets and parentheses are not speech
     text = re.sub(r"\[[^\]\n]*\]", "", text)
-    text = re.sub(r"\(([^()\n]{0,120})\)", r" \1 ", text)
+    text = re.sub(r"\([^()\n]{0,120}\)", " ", text)
     # emojis and other symbol noise
     text = _EMOJI_RE.sub("", text)
     # collapse whitespace
