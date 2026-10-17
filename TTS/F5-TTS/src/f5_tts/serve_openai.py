@@ -51,7 +51,9 @@ def _patched_chunk_text(text, max_chars=135):
     ``max_chars`` is measured in bytes. Individual sentences are never split to
     meet the budget, so chunks may exceed it. Empty input returns an empty list.
     """
-    return utils_infer._orig_chunk_text(text, max_chars=max(max_chars, 170))
+    return _sanitize_segments(
+        utils_infer._orig_chunk_text(text, max_chars=max(max_chars, 170))
+    )
 
 
 utils_infer._orig_chunk_text = utils_infer.chunk_text
