@@ -1,0 +1,27 @@
+{
+  "temp": 0.70,
+  "top_p": 0.80,
+  "top_k": 20,
+  "min_p": 0.00,
+  "typical": 1.0,
+  "rep_pen": 1.00,
+  "rep_pen_range": 2048,
+  "rep_pen_slope": 0,
+  "presence_penalty": 1.50,
+  "frequency_penalty": 0.0,
+  "mirostat": 0,
+  "mirostat_tau": 5.0,
+  "mirostat_eta": 0.1,
+  "single_line": false,
+  "temperature_last": true,
+  "stop_sequence": [
+    "<|endof_text|>",
+    "<|im_end|>",
+    "\n\nUser:",
+    "<|turn|>"
+  ],
+  "seed": -1,
+  "max_length": 2048,
+  "preset_name": "Qwen3.5_35B_Aggressive_ERP",
+  "preset_description": "Рекомендуемые сэмплы для Qwen3.5-35B-A3B в режиме Non-Thinking для художественного и интимного ролевого отыгрыша."
+}
