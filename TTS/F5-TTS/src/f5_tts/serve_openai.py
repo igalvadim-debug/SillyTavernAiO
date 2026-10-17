@@ -320,6 +320,20 @@ def list_voices():
 
 @app.post("/v1/audio/speech")
 def speech(req: SpeechRequest, request: Request):
+    """Synthesize cleaned chat text with a saved voice and return encoded audio.
+
+    Serialize model inference across requests and use the default voice when the
+    requested voice is missing or unknown. A missing or zero ``nfe_step`` uses
+    the server default; ``length_scale`` overrides its duration multiplier.
+    Always trim generated audio edges. Unsupported formats or failed compressed
+    encoding fall back to WAV. Errors from voice storage, trimming, or final WAV
+    encoding propagate.
+
+    Raises:
+        HTTPException: With status 503 if the model is not loaded, 400 for input
+            empty after cleaning or no available default voice, or 500 for
+            inference failures.
+    """
     if _tts is None:
         raise HTTPException(status_code=503, detail="Model not loaded yet")
     text = _clean_text(req.input)
@@ -409,6 +423,15 @@ def _warmup():
 
 
 def main():
+    """Load the model from CLI options, optionally warm up, and serve HTTP.
+
+    Replace default checkpoint and vocabulary URLs with local files when the
+    local checkpoint exists and, for the vocabulary, its local file also exists.
+    Retain nondefault CLI paths. Remote resources may be downloaded. Update the
+    shared model and inference defaults, then block while Uvicorn runs. Resource
+    resolution and model loading errors propagate; warmup inference failures are
+    caught so startup can continue.
+    """
     global _tts, _default_nfe, _length_scale
     parser = argparse.ArgumentParser(description="OpenAI-compatible F5-TTS server")
     parser.add_argument("--host", default="127.0.0.1")
