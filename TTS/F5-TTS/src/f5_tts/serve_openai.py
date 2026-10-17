@@ -1,0 +1,310 @@
+"""OpenAI-compatible TTS HTTP server for F5-TTS (for SillyTavern et al.).
+
+Implements the subset of the OpenAI Audio API that SillyTavern's
+"OpenAI Compatible" TTS provider calls:
+
+    POST /v1/audio/speech   {model, input, voice, response_format, speed, ...}
+    GET  /v1/models
+    GET  /v1/audio/voices   (extra: list of saved voice presets)
+    GET  /health
+
+Voices are read from the voices/ folder (see f5_tts.infer.voices_store) and
+saved from the Gradio Web UI.
+
+Run:
+    python -m f5_tts.serve_openai --port 7868
+"""
+
+import argparse
+import io
+import sys
+import threading
+
+# Windows consoles may use a codepage that cannot encode Cyrillic (e.g. cp1252).
+# utils_infer prints the reference text, which would then raise UnicodeEncodeError
+# and turn every request into an HTTP 500. Make the console error-tolerant.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except Exception:  # noqa: BLE001
+        pass
+del _stream
+
+import numpy as np
+import soundfile as sf
+from cached_path import cached_path
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from pydantic import BaseModel
+
+from f5_tts.api import F5TTS
+from f5_tts.infer import voices_store
+
+DEFAULT_CKPT = "hf://Misha24-10/F5-TTS_RUSSIAN/F5TTS_v1_Base/model_240000_inference.safetensors"
+DEFAULT_VOCAB = "hf://Misha24-10/F5-TTS_RUSSIAN/F5TTS_v1_Base/vocab.txt"
+
+app = FastAPI(title="F5-TTS OpenAI-compatible API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+_tts = None
+_infer_lock = threading.Lock()
+_default_nfe = 16
+_length_scale = 1.06
+
+
+class SpeechRequest(BaseModel):
+    model: str = "f5-tts"
+    input: str
+    voice: str | None = None
+    response_format: str = "mp3"
+    speed: float = 1.0
+    # F5-TTS extras (optional, ignored by OpenAI clients)
+    nfe_step: int | None = None
+    cfg_strength: float = 2.0
+    sway_sampling_coef: float = -1.0
+    seed: int | None = None
+    remove_silence: bool = False
+    length_scale: float | None = None
+
+
+def _normalize_voice_name(name):
+    """Strip client-side noise from a requested voice name.
+
+    Some clients (notably SillyTavern with a hand-edited "Available voices" list)
+    send the preset wrapped in whitespace and quotes, e.g. ``" 'David'"`` instead
+    of ``"David"``. Without this, every such request misses voices.json and the
+    server silently falls back to the default voice -> every character sounds the
+    same, which is almost impossible to diagnose from the audio alone.
+    """
+    if not name:
+        return name
+    cleaned = name.strip()
+    while len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in ("'", '"'):
+        cleaned = cleaned[1:-1].strip()
+    return cleaned
+
+
+def _resolve_voice(name):
+    if name:
+        voice = voices_store.get_voice(name)
+        if voice is None:
+            cleaned = _normalize_voice_name(name)
+            if cleaned != name:
+                voice = voices_store.get_voice(cleaned)
+            if voice is None and cleaned:
+                # case-insensitive fallback ("david" -> "David")
+                lowered = cleaned.casefold()
+                for candidate in voices_store.list_voice_names():
+                    if candidate.casefold() == lowered:
+                        voice = voices_store.get_voice(candidate)
+                        break
+        if voice is not None:
+            return voice
+        # Requested voice is not in voices.json -> fall back to the default, but say
+        # so loudly. A *silent* fallback makes every character sound identical, which
+        # is almost impossible to diagnose from the audio alone.
+        available = voices_store.list_voice_names()
+        print(
+            f"[serve_openai] WARNING: requested voice {name!r} not found in voices.json; "
+            f"using default {voices_store.get_default_name()!r}. "
+            f"Available voices: {', '.join(available) if available else '(none)'}",
+            file=sys.stderr,
+            flush=True,
+        )
+    voice = voices_store.get_voice(voices_store.get_default_name())
+    if voice is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No voice preset available. Save a reference voice first in the Web UI "
+                f"(start.bat -> 1), it is stored in: {voices_store.VOICES_DIR}"
+            ),
+        )
+    return voice
+
+
+def _encode(wav, sr, fmt):
+    fmt = (fmt or "wav").lower()
+    arr = np.asarray(wav, dtype=np.float32).reshape(-1)
+    if fmt in ("wav", "pcm"):
+        buf = io.BytesIO()
+        sf.write(buf, arr, sr, format="WAV")
+        return buf.getvalue(), "audio/wav"
+    if fmt in ("mp3", "opus", "aac", "flac", "ogg"):
+        try:
+            from pydub import AudioSegment
+
+            pcm = (np.clip(arr, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
+            seg = AudioSegment(pcm, frame_rate=sr, sample_width=2, channels=1)
+            buf = io.BytesIO()
+            seg.export(buf, format=fmt)
+            mime = "audio/mpeg" if fmt == "mp3" else f"audio/{fmt}"
+            return buf.getvalue(), mime
+        except Exception as e:  # ffmpeg missing / export failed -> fall back to wav
+            print(f"[serve_openai] {fmt} encode failed ({e}); returning wav", file=sys.stderr)
+    buf = io.BytesIO()
+    sf.write(buf, arr, sr, format="WAV")
+    return buf.getvalue(), "audio/wav"
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "model_loaded": _tts is not None}
+
+
+@app.get("/v1/models")
+def models():
+    return {"object": "list", "data": [{"id": "f5-tts", "object": "model", "owned_by": "f5-tts"}]}
+
+
+@app.get("/v1/audio/voices")
+def list_voices():
+    return {
+        "voices": voices_store.list_voice_names(),
+        "default": voices_store.get_default_name(),
+        "dir": str(voices_store.VOICES_DIR),
+    }
+
+
+@app.post("/v1/audio/speech")
+def speech(req: SpeechRequest, request: Request):
+    if _tts is None:
+        raise HTTPException(status_code=503, detail="Model not loaded yet")
+    text = (req.input or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="`input` is empty")
+    client = request.client.host if request.client else "?"
+    print(
+        f"[serve_openai] REQ from {client}: voice={req.voice!r} "
+        f"format={req.response_format!r} nfe={req.nfe_step or _default_nfe} chars={len(text)}",
+        file=sys.stderr,
+        flush=True,
+    )
+    voice = _resolve_voice(req.voice)
+    # The F5-TTS model is NOT thread-safe, but FastAPI runs this sync endpoint in a
+    # thread pool. Without a lock, two overlapping requests (SillyTavern often sends
+    # several lines back-to-back) run inference on the same model at once and corrupt
+    # each other -> hiss / crackle / roar over the speech. Serialize them here.
+    if not _infer_lock.acquire(blocking=False):
+        print(f"[serve_openai] {client}: GPU busy, queued behind another request", file=sys.stderr, flush=True)
+        _infer_lock.acquire()
+    try:
+        wav, sr, _spec = _tts.infer(
+            ref_file=voice["path"],
+            ref_text=voice["ref_text"],
+            gen_text=text,
+            show_info=lambda *a, **k: None,
+            progress=None,
+            nfe_step=req.nfe_step or _default_nfe,
+            cfg_strength=req.cfg_strength,
+            sway_sampling_coef=req.sway_sampling_coef,
+            speed=req.speed,
+            remove_silence=req.remove_silence,
+            seed=req.seed,
+            duration_scale=req.length_scale if req.length_scale is not None else _length_scale,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"synthesis failed: {e}") from e
+    finally:
+        _infer_lock.release()
+    data, mime = _encode(wav, sr, req.response_format)
+    print(
+        f"[serve_openai] -> {client}: resolved_voice={voice['name']!r} bytes={len(data)} mime={mime}",
+        file=sys.stderr,
+        flush=True,
+    )
+    return Response(content=data, media_type=mime)
+
+
+def _warmup():
+    """Run one short synthesis so the first real request is not slow.
+
+    Fills the reference-audio cache in utils_infer and lets CUDA allocate its
+    kernels/buffers up front. Uses the default voice; skipped silently if none
+    is available.
+    """
+    if _tts is None:
+        return
+    try:
+        voice = _resolve_voice(None)
+    except HTTPException:
+        voice = None
+    if voice is None:
+        print("[serve_openai] Warmup skipped (no voice preset available).")
+        return
+    print("Warming up (first inference)...")
+    try:
+        _tts.infer(
+            ref_file=voice["path"],
+            ref_text=voice["ref_text"],
+            gen_text="Проверка.",
+            show_info=lambda *a, **k: None,
+            progress=None,
+            nfe_step=_default_nfe,
+            cfg_strength=2.0,
+            sway_sampling_coef=-1.0,
+            speed=1.0,
+            remove_silence=False,
+            seed=0,
+            duration_scale=_length_scale,
+        )
+        print("Warmup done.")
+    except Exception as e:  # noqa: BLE001
+        print(f"[serve_openai] Warmup failed ({e}); continuing.", file=sys.stderr)
+
+
+def main():
+    global _tts, _default_nfe, _length_scale
+    parser = argparse.ArgumentParser(description="OpenAI-compatible F5-TTS server")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=7868)
+    parser.add_argument("--ckpt", default=DEFAULT_CKPT, help="model checkpoint path or hf:// URL")
+    parser.add_argument("--vocab", default=DEFAULT_VOCAB, help="vocab.txt path or hf:// URL")
+    parser.add_argument("--model", default="F5TTS_v1_Base", help="config name (configs/<model>.yaml)")
+    parser.add_argument("--nfe-step", type=int, default=16)
+    parser.add_argument(
+        "--length-pad",
+        type=float,
+        default=1.06,
+        help="scale the estimated generation length; >1 adds tail room so the "
+        "last phoneme is not cut off (1.0 = old behaviour)",
+    )
+    parser.add_argument("--device", default=None)
+    parser.add_argument(
+        "--no-warmup",
+        action="store_true",
+        help="skip the short warmup inference at startup",
+    )
+    args = parser.parse_args()
+
+    _default_nfe = args.nfe_step
+    _length_scale = args.length_pad
+
+    print("Loading F5-TTS model (this may take a moment)...")
+    _tts = F5TTS(
+        model=args.model,
+        ckpt_file=str(cached_path(args.ckpt)),
+        vocab_file=str(cached_path(args.vocab)),
+        device=args.device,
+    )
+
+    if not args.no_warmup:
+        _warmup()
+
+    print(f"Voices dir : {voices_store.VOICES_DIR}")
+    print(f"Voices     : {voices_store.list_voice_names() or '(none yet)'}")
+    print(f"Endpoint   : http://{"127.0.0.1" if args.host == "0.0.0.0" else args.host}:{args.port}/v1/audio/speech  (OpenAI-compatible)")
+
+    import uvicorn
+
+    uvicorn.run(app, host=args.host, port=args.port)
+
+
+if __name__ == "__main__":
+    main()
