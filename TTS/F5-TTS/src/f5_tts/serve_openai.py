@@ -17,8 +17,10 @@ Run:
 
 import argparse
 import io
+import re
 import sys
 import threading
+from pathlib import Path
 
 # Windows consoles may use a codepage that cannot encode Cyrillic (e.g. cp1252).
 # utils_infer prints the reference text, which would then raise UnicodeEncodeError
@@ -38,11 +40,34 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+import f5_tts.infer.utils_infer as utils_infer
 from f5_tts.api import F5TTS
 from f5_tts.infer import voices_store
 
+
+def _patched_chunk_text(text, max_chars=135):
+    """Chunking tuned for long Russian reference clips.
+
+    The upstream formula derives max_chars from the reference audio; with 8-14 s refs
+    it drops to ~20 *bytes* (~10 Cyrillic chars), which splits sentences mid-word and
+    produces many audible cross-fade seams. We keep the same sentence-boundary logic
+    but enforce a sane minimum of ~90 Cyrillic characters per chunk.
+    """
+    return _sanitize_segments(utils_infer._orig_chunk_text(text, max_chars=max(max_chars, 170)))
+
+
+utils_infer._orig_chunk_text = utils_infer.chunk_text
+utils_infer.chunk_text = _patched_chunk_text
+
 DEFAULT_CKPT = "hf://Misha24-10/F5-TTS_RUSSIAN/F5TTS_v1_Base/model_240000_inference.safetensors"
 DEFAULT_VOCAB = "hf://Misha24-10/F5-TTS_RUSSIAN/F5TTS_v1_Base/vocab.txt"
+
+# Fine-tuned Russian checkpoint shipped *locally* with this repo (see TTS/F5-TTS/ckpts/README.md).
+# serve_openai always resolves its model relative to the F5-TTS folder, independent of the
+# Windows/Linux home directory or any HF cache - no path changes needed. If the file is not
+# present yet, the server transparently falls back to the hf:// download above.
+_LOCAL_CKPT = Path(__file__).resolve().parents[2] / "ckpts" / "F5TTS_v1_Base" / "model_240000_safetensors" / "F5TTS_v1_Base_model_240000.safetensors"
+_LOCAL_VOCAB = Path(__file__).resolve().parents[2] / "ckpts" / "F5TTS_v1_Base" / "model_240000_safetensors" / "vocab.txt"
 
 app = FastAPI(title="F5-TTS OpenAI-compatible API")
 app.add_middleware(
@@ -54,8 +79,104 @@ app.add_middleware(
 
 _tts = None
 _infer_lock = threading.Lock()
-_default_nfe = 16
+_default_nfe = 11
 _length_scale = 1.06
+
+
+# ---- text hygiene for chat clients (SillyTavern) ------------------------------
+# SillyTavern sends markdown / roleplay noise (**bold**, *italics*, `code`, > quotes,
+# [brackets], (actions), emojis...). F5-TTS reads such characters literally or gets
+# confused by them. We clean the incoming text so speech sounds natural - without
+# touching any paths or the model itself.
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U00002600-\U000027BF"
+    "\U0001F1E6-\U0001F1FF"
+    "\U00002B00-\U00002BFF"
+    "\U0000FE00-\U0000FE0F"
+    "\U0000200D"
+    "]+",
+    flags=re.UNICODE,
+)
+_MD_BOLD_RE = re.compile(r"(\*{2,3}|_{2,3})(.+?)\1", flags=re.DOTALL)
+_MD_ITAL_RE = re.compile(r"(?<![\w])([*_])(?![*_\s])([^*_\n]+?)(?<=[^\s*_])\1(?![\w*])", flags=re.DOTALL)
+
+
+def _clean_text(text):
+    """Make chat/markdown text speakable (Russian-friendly)."""
+    if not text:
+        return ""
+    # code blocks and inline code -> drop entirely (never meant to be spoken)
+    text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+    text = re.sub(r"`([^`\n]*)`", r"\1", text)
+    # headers / blockquotes / horizontal rules
+    text = re.sub(r"^\s{0,3}#{1,6}\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*>+\s?", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*([-*_])\s*(\1\s*){2,}$", "", text, flags=re.MULTILINE)
+    # links [label](url) -> label; bare urls get spelled badly -> drop
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"https?://\S+", "", text)
+    # bold first (**text**), then *roleplay emotes* (multi-word asterisk segments are
+    # actions in SillyTavern style - they must not be spoken), then single-word italics.
+    text = _MD_BOLD_RE.sub(r"\2", text)
+    text = re.sub(r"(?<!\*)\*[^*\n]*?\s[^*\n]*?\*(?!\*)", " ", text)  # emotes with a space
+    text = _MD_ITAL_RE.sub(r"\2", text)
+    text = text.replace("~~", "")
+    # any leftover stray asterisks / underscores used as emphasis markers
+    text = re.sub(r"(?<!\d)[*_](?!\d)", "", text)
+    # stage directions / system notes in brackets and parentheses are not speech
+    text = re.sub(r"\[[^\]\n]*\]", "", text)
+    text = re.sub(r"\(([^()\n]{0,120})\)", " ", text)
+    # emojis and other symbol noise
+    text = _EMOJI_RE.sub("", text)
+    # collapse whitespace
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n\s*\n+", " ", text)
+    text = text.replace("\n", " ").strip()
+    # ensure it ends with sentence punctuation, otherwise the last phoneme gets cut
+    if text and text[-1] not in ".!?…;:，。！？；：":
+        text += "."
+    return text
+
+
+def _sanitize_segments(segments):
+    """Post-process the upstream chunking result.
+
+    Two problems with the default chunking when the reference clip is long (our local
+    voices are 8-14 s of Russian speech):
+      1. max_chars becomes tiny (~20 chars for a 12 s ref) -> dozens of micro-batches,
+         each synthesized separately -> choppy delivery and audible cross-fade seams.
+      2. chunks may end mid-word or without terminal punctuation -> clipped endings.
+    We merge short neighbours up to ~90 chars and make sure every piece ends cleanly.
+    """
+    if not segments:
+        return segments
+    merged = []
+    buf = ""
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
+            continue
+        if buf and len(buf.encode("utf-8")) + len(seg.encode("utf-8")) <= 90 * 2:  # ~90 Cyrillic chars
+            buf = f"{buf} {seg}".strip()
+        else:
+            if buf:
+                merged.append(buf)
+            buf = seg
+    if buf:
+        merged.append(buf)
+    out = []
+    for seg in merged:
+        if seg[-1] not in ".!?…;:，。！？；：":
+            # prefer ending at a comma/period boundary; otherwise append a period so
+            # the model does not trail off mid-phoneme
+            seg = seg.rstrip(",;: ") 
+            if seg and seg[-1] not in ".!?…":
+                seg += "."
+        if seg:
+            out.append(seg)
+    return out or segments
 
 
 class SpeechRequest(BaseModel):
@@ -129,6 +250,31 @@ def _resolve_voice(name):
     return voice
 
 
+def _trim_edges(wav, sr, max_head=0.25, max_tail=0.45, thresh_db=-45.0):
+    """Trim leading/trailing silence of the *generated* audio (in-memory).
+
+    duration_scale > 1 deliberately adds tail room; without a trim that becomes
+    dead air before SillyTavern plays the next line. We keep at most max_head /
+    max_tail seconds of edge silence so breaths/intro reverb survive but long gaps
+    disappear. Pure signal processing - no paths, no model changes.
+    """
+    arr = np.asarray(wav, dtype=np.float32).reshape(-1)
+    if arr.size == 0:
+        return arr
+    frame = max(1, int(sr * 0.01))  # 10 ms granularity
+    n_frames = max(1, arr.size // frame)
+    rms = np.sqrt((arr[: n_frames * frame].reshape(n_frames, frame) ** 2).mean(axis=1))
+    thr = (10.0 ** (thresh_db / 20.0)) * float(np.abs(arr).max()) + 1e-9
+    voiced = np.nonzero(rms > thr)[0]
+    if voiced.size == 0:
+        return arr
+    head_keep = int(max_head * sr)
+    tail_keep = int(max_tail * sr)
+    start = max(0, int(voiced[0] * frame) - head_keep)
+    end = min(arr.size, int((voiced[-1] + 1) * frame) + tail_keep)
+    return arr[start:end]
+
+
 def _encode(wav, sr, fmt):
     fmt = (fmt or "wav").lower()
     arr = np.asarray(wav, dtype=np.float32).reshape(-1)
@@ -176,7 +322,7 @@ def list_voices():
 def speech(req: SpeechRequest, request: Request):
     if _tts is None:
         raise HTTPException(status_code=503, detail="Model not loaded yet")
-    text = (req.input or "").strip()
+    text = _clean_text(req.input)
     if not text:
         raise HTTPException(status_code=400, detail="`input` is empty")
     client = request.client.host if request.client else "?"
@@ -194,6 +340,7 @@ def speech(req: SpeechRequest, request: Request):
     if not _infer_lock.acquire(blocking=False):
         print(f"[serve_openai] {client}: GPU busy, queued behind another request", file=sys.stderr, flush=True)
         _infer_lock.acquire()
+    nfe = req.nfe_step or _default_nfe
     try:
         wav, sr, _spec = _tts.infer(
             ref_file=voice["path"],
@@ -201,7 +348,7 @@ def speech(req: SpeechRequest, request: Request):
             gen_text=text,
             show_info=lambda *a, **k: None,
             progress=None,
-            nfe_step=req.nfe_step or _default_nfe,
+            nfe_step=nfe,
             cfg_strength=req.cfg_strength,
             sway_sampling_coef=req.sway_sampling_coef,
             speed=req.speed,
@@ -213,9 +360,11 @@ def speech(req: SpeechRequest, request: Request):
         raise HTTPException(status_code=500, detail=f"synthesis failed: {e}") from e
     finally:
         _infer_lock.release()
+    wav = _trim_edges(wav, sr)
     data, mime = _encode(wav, sr, req.response_format)
     print(
-        f"[serve_openai] -> {client}: resolved_voice={voice['name']!r} bytes={len(data)} mime={mime}",
+        f"[serve_openai] -> {client}: resolved_voice={voice['name']!r} bytes={len(data)} "
+        f"mime={mime} dur={len(wav) / sr:.2f}s nfe={nfe}",
         file=sys.stderr,
         flush=True,
     )
@@ -267,7 +416,7 @@ def main():
     parser.add_argument("--ckpt", default=DEFAULT_CKPT, help="model checkpoint path or hf:// URL")
     parser.add_argument("--vocab", default=DEFAULT_VOCAB, help="vocab.txt path or hf:// URL")
     parser.add_argument("--model", default="F5TTS_v1_Base", help="config name (configs/<model>.yaml)")
-    parser.add_argument("--nfe-step", type=int, default=16)
+    parser.add_argument("--nfe-step", type=int, default=11)
     parser.add_argument(
         "--length-pad",
         type=float,
@@ -286,11 +435,27 @@ def main():
     _default_nfe = args.nfe_step
     _length_scale = args.length_pad
 
+    # Locale first: if the fine-tuned Russian checkpoint is stored locally in the
+    # F5-TTS folder (ckpts/...), use it and never depend on the HF cache / home dir.
+    # Otherwise fall back to the hf:// URL (cached_path downloads it once).
+    ckpt_arg, vocab_arg = args.ckpt, args.vocab
+    if _LOCAL_CKPT.exists():
+        if args.ckpt == DEFAULT_CKPT:
+            ckpt_arg = str(_LOCAL_CKPT)
+            print(f"Using local checkpoint: {ckpt_arg}")
+        if args.vocab == DEFAULT_VOCAB and _LOCAL_VOCAB.exists():
+            vocab_arg = str(_LOCAL_VOCAB)
+    else:
+        print(
+            f"[serve_openai] note: local checkpoint not found ({_LOCAL_CKPT}); "
+            "downloading/loading from Huggingface instead."
+        )
+
     print("Loading F5-TTS model (this may take a moment)...")
     _tts = F5TTS(
         model=args.model,
-        ckpt_file=str(cached_path(args.ckpt)),
-        vocab_file=str(cached_path(args.vocab)),
+        ckpt_file=str(cached_path(ckpt_arg)),
+        vocab_file=str(cached_path(vocab_arg)),
         device=args.device,
     )
 
